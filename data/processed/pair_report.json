@@ -1,0 +1,53 @@
+{
+  "records": 100,
+  "possible_pairs": 300,
+  "retained_pairs": 188,
+  "retained_prompts": 80,
+  "pairs_by_split": {
+    "train": 225,
+    "validation": 39,
+    "test": 36
+  },
+  "retained_by_split": {
+    "train": 139,
+    "validation": 27,
+    "test": 22
+  },
+  "retained_by_confidence": {
+    "medium": 100,
+    "high": 88
+  },
+  "retained_by_comparison_type": {
+    "baseline__vs__sdt-augmented": 73,
+    "sdt__vs__sdt-augmented": 59,
+    "baseline__vs__sdt": 56
+  },
+  "exclusion_reasons": {
+    "margin_below_threshold": 51,
+    "confidence_below_threshold": 98,
+    "insufficient_common_successful_judges": 48,
+    "aggregate_tie": 15
+  },
+  "preferred_field_agreement": {
+    "agrees": 192,
+    "disagrees": 0,
+    "not_applicable": 108
+  },
+  "methodology": {
+    "split_unit": "normalized exact prompt",
+    "near_duplicate_clustering": false,
+    "failed_judgment_handling": "excluded; never converted to zero",
+    "label_margin_units": "raw judge-score units",
+    "pair_weight": "1.0 for the equal-weight DPO baseline"
+  },
+  "configuration": {
+    "seed": 42,
+    "train_share": 0.7,
+    "validation_share": 0.15,
+    "test_share": 0.15,
+    "min_common_judges": 2,
+    "min_margin": 0.1,
+    "min_confidence": 0.6,
+    "score_span": 4.0
+  }
+}
