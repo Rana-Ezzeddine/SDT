@@ -1,5 +1,7 @@
 # SDT full-parameter DPO pipeline
 
+[Open the complete training and evaluation notebook in Colab](https://colab.research.google.com/github/Rana-Ezzeddine/SDT/blob/main/notebooks/SDT_Full_DPO_Colab.ipynb)
+
 This repository converts the SDT judgment JSON into auditable preference pairs,
 trains **all parameters** of `Qwen/Qwen2.5-0.5B-Instruct` with DPO, and compares the
 frozen baseline and full-DPO checkpoint on the same locked test set.
@@ -23,6 +25,7 @@ parameter is trainable and stops if any part of the model is frozen.
 
 ```text
 configs/full.yaml          Full-parameter DPO settings
+notebooks/SDT_Full_DPO_Colab.ipynb
 data/raw/                  Supplied 100-record structural sample
 data/processed/            Generated pairs and preparation audit
 src/sdt_dpo/pairs.py       Raw JSON -> chosen/rejected pairs and splits

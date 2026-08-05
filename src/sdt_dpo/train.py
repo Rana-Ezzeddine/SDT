@@ -172,7 +172,7 @@ def main() -> None:
         beta=float(config.get("beta", 0.1)),
         loss_type=str(config.get("loss_type", "sigmoid")),
         learning_rate=float(config.get("learning_rate", 5e-7)),
-        warmup_ratio=float(config.get("warmup_ratio", 0.1)),
+        warmup_steps=int(config.get("warmup_steps", 2)),
         num_train_epochs=float(config.get("num_train_epochs", 1)),
         per_device_train_batch_size=int(config.get("per_device_train_batch_size", 1)),
         per_device_eval_batch_size=int(config.get("per_device_eval_batch_size", 1)),
@@ -224,10 +224,10 @@ def main() -> None:
     print(f"Full DPO trainable parameters: {trainable_parameters:,}/{total_parameters:,}")
 
     train_result = trainer.train()
-    validation_metrics = trainer.evaluate(
-        eval_dataset=validation_dpo,
-        metric_key_prefix="validation",
-    )
+    # Reuse the initialized eval dataset because its reference log-probabilities were
+    # cached before training. Passing validation_dpo here would be a new uncached dataset
+    # after the reference model has already been released.
+    validation_metrics = trainer.evaluate(metric_key_prefix="validation")
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
 
