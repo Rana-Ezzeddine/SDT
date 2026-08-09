@@ -22,6 +22,7 @@ sdt-build-pairs = "sdt_dpo.pairs:main"
 sdt-train-dpo = "sdt_dpo.train:main"
 sdt-evaluate-pairs = "sdt_dpo.evaluate:main"
 sdt-compare-evaluations = "sdt_dpo.compare:main"
+sdt-verify-checkpoint = "sdt_dpo.verify_checkpoint:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

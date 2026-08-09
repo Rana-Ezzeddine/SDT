@@ -1,0 +1,28 @@
+# Optional pipeline canary. This deliberately reuses 8 training pairs for validation.
+# Never use this configuration for a real model comparison or final result.
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+training_method: full_parameter_dpo
+pairs_file: data/processed/dpo_pairs.jsonl
+output_dir: outputs/dpo-overfit-sanity
+
+allowed_confidence: [high, medium]
+min_label_margin: 0.10
+max_train_samples: 8
+max_validation_samples: null
+sanity_use_train_as_validation: true
+
+beta: 0.10
+loss_type: sigmoid
+learning_rate: 5.0e-6
+warmup_steps: 5
+num_train_epochs: 10
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 1
+max_length: 1024
+precompute_ref_log_probs: true
+
+eval_strategy: epoch
+save_strategy: epoch
+logging_steps: 2
+seed: 42

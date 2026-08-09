@@ -147,22 +147,62 @@ def _device_and_dtype(torch: Any) -> tuple[Any, Any, str]:
 
 
 def _sequence(tokenizer: Any, prompt: str, response: str) -> tuple[list[int], int]:
-    prompt_messages = [{"role": "user", "content": prompt}]
-    full_messages = prompt_messages + [{"role": "assistant", "content": response}]
-    prefix = tokenizer.apply_chat_template(
-        prompt_messages, tokenize=True, add_generation_prompt=True
+    if not response:
+        raise ValueError("empty_response")
+    if not getattr(tokenizer, "is_fast", False):
+        raise ValueError("fast_tokenizer_required_for_response_offsets")
+
+    # A generation-prompt rendering is not guaranteed to be a token prefix of the
+    # completed chat rendering. Mark the exact start of the assistant content in the
+    # rendered conversation, remove the marker, and use tokenizer character offsets
+    # to find the first response token without relying on that invalid assumption.
+    marker = "<|sdt_response_boundary|>"
+    while marker in prompt or marker in response:
+        marker += "_"
+    messages = [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": marker + response},
+    ]
+    rendered_with_marker = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
     )
-    full = tokenizer.apply_chat_template(
-        full_messages, tokenize=True, add_generation_prompt=False
+    marker_start = rendered_with_marker.find(marker)
+    if marker_start < 0 or rendered_with_marker.count(marker) != 1:
+        raise ValueError("response_boundary_marker_not_found")
+
+    rendered = (
+        rendered_with_marker[:marker_start]
+        + rendered_with_marker[marker_start + len(marker) :]
     )
-    if full[: len(prefix)] != prefix:
-        raise ValueError("chat_template_prefix_mismatch")
-    if len(full) <= len(prefix):
+    encoded = tokenizer(
+        rendered,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+    )
+    full = list(encoded["input_ids"])
+    offsets = list(encoded["offset_mapping"])
+    response_start = next(
+        (
+            index
+            for index, (start, end) in enumerate(offsets)
+            if end > marker_start and end > start
+        ),
+        None,
+    )
+    if response_start is None or response_start >= len(full):
         raise ValueError("empty_tokenized_response")
-    return full, len(prefix)
+    return full, response_start
 
 
-def _score_response(model: Any, torch: Any, token_ids: list[int], response_start: int, device: Any) -> float:
+def _score_response(
+    model: Any,
+    torch: Any,
+    token_ids: list[int],
+    response_start: int,
+    device: Any,
+) -> dict[str, float | int]:
     ids = torch.tensor([token_ids], dtype=torch.long, device=device)
     with torch.inference_mode():
         logits = model(input_ids=ids, use_cache=False).logits
@@ -170,7 +210,11 @@ def _score_response(model: Any, torch: Any, token_ids: list[int], response_start
         targets = ids[:, 1:]
         gathered = token_log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
         response_log_probs = gathered[:, response_start - 1 :]
-    return float(response_log_probs.mean().item())
+    return {
+        "mean": float(response_log_probs.mean().item()),
+        "sum": float(response_log_probs.sum().item()),
+        "token_count": int(response_log_probs.numel()),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -226,7 +270,7 @@ def main() -> None:
                 raise ValueError("over_max_length")
             chosen_score = _score_response(model, torch, chosen_ids, chosen_start, device)
             rejected_score = _score_response(model, torch, rejected_ids, rejected_start, device)
-            margin = chosen_score - rejected_score
+            margin = float(chosen_score["mean"]) - float(rejected_score["mean"])
             evaluated.append(
                 {
                     "pair_id": row["pair_id"],
@@ -235,8 +279,12 @@ def main() -> None:
                     "label_confidence": row["label_confidence"],
                     "label_margin": row["label_margin"],
                     "comparison_type": row["comparison_type"],
-                    "chosen_logprob_per_token": chosen_score,
-                    "rejected_logprob_per_token": rejected_score,
+                    "chosen_logprob_per_token": chosen_score["mean"],
+                    "rejected_logprob_per_token": rejected_score["mean"],
+                    "chosen_logprob_sum": chosen_score["sum"],
+                    "rejected_logprob_sum": rejected_score["sum"],
+                    "chosen_token_count": chosen_score["token_count"],
+                    "rejected_token_count": rejected_score["token_count"],
                     "model_margin": margin,
                     "correct": margin > 0.0,
                     "tie": math.isclose(margin, 0.0, abs_tol=1e-12),

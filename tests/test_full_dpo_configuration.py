@@ -14,6 +14,10 @@ class FullDPOConfigurationTests(unittest.TestCase):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = project["project"]["dependencies"]
         self.assertFalse(any(item.lower().startswith("peft") for item in dependencies))
+        self.assertEqual(
+            project["project"]["scripts"]["sdt-verify-checkpoint"],
+            "sdt_dpo.verify_checkpoint:main",
+        )
 
     def test_configuration_selects_full_parameter_training(self) -> None:
         config = (ROOT / "configs/full.yaml").read_text(encoding="utf-8")
@@ -36,6 +40,12 @@ class FullDPOConfigurationTests(unittest.TestCase):
         script = (ROOT / "scripts/run_sample_pipeline.sh").read_text(encoding="utf-8")
         self.assertIn("--model outputs/dpo-full", script)
         self.assertNotIn("--adapter", script)
+
+    def test_overfit_canary_is_explicitly_separate(self) -> None:
+        config = (ROOT / "configs/sanity_overfit.yaml").read_text(encoding="utf-8")
+        self.assertIn("max_train_samples: 8", config)
+        self.assertIn("sanity_use_train_as_validation: true", config)
+        self.assertIn("output_dir: outputs/dpo-overfit-sanity", config)
 
     def test_colab_notebook_is_valid_and_has_no_saved_outputs(self) -> None:
         notebook_path = ROOT / "notebooks/SDT_Full_DPO_Colab.ipynb"

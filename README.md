@@ -32,6 +32,7 @@ src/sdt_dpo/pairs.py       Raw JSON -> chosen/rejected pairs and splits
 src/sdt_dpo/train.py       Full-parameter DPO trainer
 src/sdt_dpo/evaluate.py    Baseline or full-checkpoint evaluator
 src/sdt_dpo/compare.py     Paired baseline-vs-DPO statistics
+src/sdt_dpo/verify_checkpoint.py  Direct parameter-change check
 scripts/run_sample_pipeline.sh
 tests/                     Data, leakage, and metric tests
 outputs/                   Created during training and evaluation
@@ -150,13 +151,29 @@ sdt-evaluate-pairs \
 sdt-compare-evaluations \
   --baseline-details outputs/base-test-pairs.jsonl \
   --dpo-details outputs/dpo-test-pairs.jsonl \
-  --output outputs/base-vs-dpo.json
+  --output outputs/base-vs-dpo.json \
+  --details-output outputs/dpo-relative-test-pairs.jsonl \
+  --beta 0.10
 ```
 
-The reports include pair preference accuracy, equal-weight-per-prompt accuracy,
-chosen-minus-rejected model margin, confidence/source subgroups, a prompt-cluster
-bootstrap interval, and the paired change from baseline to DPO. Prompt-clustered
-results are primary because several comparison pairs can come from one prompt.
+The comparison's primary metrics are DPO implicit reward accuracy and margin,
+computed from the policy-versus-reference log-probability changes. Absolute
+length-normalized pair accuracy remains a secondary diagnostic. Both include
+equal-weight-per-prompt summaries and prompt-cluster uncertainty because several
+pairs can come from one prompt.
+
+Verify directly that a representative weight changed:
+
+```bash
+sdt-verify-checkpoint \
+  --baseline-model Qwen/Qwen2.5-0.5B-Instruct \
+  --trained-model outputs/dpo-full \
+  --output outputs/checkpoint-change.json
+```
+
+An optional deliberate overfit canary is available at
+`configs/sanity_overfit.yaml`. It reuses eight training pairs as validation and must
+never be used as a real experiment or reported result.
 
 ## Expected outputs
 
@@ -167,7 +184,9 @@ outputs/
 ├── base-test-pairs.jsonl     Baseline per-pair scores
 ├── dpo-test.json             Full-DPO summary
 ├── dpo-test-pairs.jsonl      Full-DPO per-pair scores
-└── base-vs-dpo.json          Paired comparison
+├── dpo-relative-test-pairs.jsonl
+├── checkpoint-change.json
+└── base-vs-dpo.json          DPO-relative and absolute paired comparison
 ```
 
 ## Scaling to the complete dataset

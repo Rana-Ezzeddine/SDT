@@ -117,6 +117,14 @@ def main() -> None:
             range(min(int(max_validation), len(split_datasets["validation"])))
         )
 
+    sanity_use_train_as_validation = bool(
+        config.get("sanity_use_train_as_validation", False)
+    )
+    if sanity_use_train_as_validation:
+        # Deliberately evaluate on the same tiny subset only for the optional overfit
+        # canary. This must never be enabled for a real experiment.
+        split_datasets["validation"] = split_datasets["train"]
+
     model_id = str(config["model_id"])
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.padding_side = "left"
@@ -247,6 +255,7 @@ def main() -> None:
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "training_method": "full_parameter_dpo",
+        "sanity_use_train_as_validation": sanity_use_train_as_validation,
         "model_id": model_id,
         "trainable_parameters": trainable_parameters,
         "total_parameters": total_parameters,

@@ -32,4 +32,6 @@ sdt-evaluate-pairs \
 sdt-compare-evaluations \
   --baseline-details outputs/base-test-pairs.jsonl \
   --dpo-details outputs/dpo-test-pairs.jsonl \
-  --output outputs/base-vs-dpo.json
+  --output outputs/base-vs-dpo.json \
+  --details-output outputs/dpo-relative-test-pairs.jsonl \
+  --beta 0.10
