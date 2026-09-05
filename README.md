@@ -2,6 +2,15 @@
 
 [Open the complete training and evaluation notebook in Colab](https://colab.research.google.com/github/Rana-Ezzeddine/SDT/blob/main/notebooks/SDT_Full_DPO_Colab.ipynb)
 
+The provisional 1,500-record, one-judge experiment is isolated on the
+`1500-record-dpo-pipeline` branch:
+
+- [Pilot methodology and exact pipeline](PILOT_1500_PIPELINE.md)
+- [Concise 1,500-record Colab notebook](notebooks/SDT_1500_DPO_Pilot_Colab.ipynb)
+
+The pilot uses supplied per-judge aggregates and does not report cross-judge
+confidence. The original multi-judge defaults remain unchanged.
+
 This repository converts the SDT judgment JSON into auditable preference pairs,
 trains **all parameters** of `Qwen/Qwen2.5-0.5B-Instruct` with DPO, and compares the
 frozen baseline and full-DPO checkpoint on the same locked test set.

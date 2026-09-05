@@ -237,8 +237,8 @@ def analyze(
             "Use the DPO-relative implicit reward accuracy and margin as the primary check of "
             "the DPO objective. Absolute length-normalized likelihood ranking is retained as a "
             "secondary diagnostic. Prompt-cluster intervals are primary because pairs from one "
-            "prompt are correlated. The 100-record sample is a pipeline test, not evidence of "
-            "general alignment improvement."
+            "prompt are correlated. A pilot dataset validates the pipeline and provides preliminary "
+            "evidence; final alignment claims require the frozen multi-judge experiment."
         ),
     }
     return report, details

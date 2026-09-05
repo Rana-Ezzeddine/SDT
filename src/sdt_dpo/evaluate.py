@@ -230,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--details", type=Path, required=True)
     parser.add_argument("--max-length", type=int, default=1024)
     parser.add_argument("--confidence", nargs="+", default=["high", "medium"])
+    parser.add_argument(
+        "--all-confidence",
+        action="store_true",
+        help="Do not filter retained pairs by label_confidence (required for the one-judge pilot).",
+    )
     parser.add_argument("--min-margin", type=float, default=0.10)
     return parser.parse_args()
 
@@ -246,7 +251,10 @@ def main() -> None:
             if (
                 row.get("retain")
                 and row.get("split") == args.split
-                and row.get("label_confidence") in set(args.confidence)
+                and (
+                    args.all_confidence
+                    or row.get("label_confidence") in set(args.confidence)
+                )
                 and float(row.get("label_margin", 0.0)) >= args.min_margin
             ):
                 rows.append(row)

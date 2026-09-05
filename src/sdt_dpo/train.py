@@ -78,14 +78,27 @@ def main() -> None:
     all_pairs = load_dataset("json", data_files=str(pairs_path), split="train")
     all_rows = [dict(row) for row in all_pairs]
     validate_no_prompt_leakage(all_rows)
+    expected_label_mode = config.get("label_mode")
+    observed_label_modes = {
+        str(row.get("label_mode", "multi_judge")) for row in all_rows
+    }
+    if expected_label_mode and observed_label_modes != {str(expected_label_mode)}:
+        raise ValueError(
+            "Pair label mode does not match the training configuration: "
+            f"expected={expected_label_mode!r}, observed={sorted(observed_label_modes)}"
+        )
 
+    filter_by_confidence = bool(config.get("filter_by_confidence", True))
     allowed_confidence = set(config.get("allowed_confidence", ["high", "medium"]))
     minimum_margin = float(config.get("min_label_margin", 0.0))
 
     def eligible(row: dict[str, Any]) -> bool:
-        return bool(row["retain"]) and (
-            row["label_confidence"] in allowed_confidence
-            and float(row["label_margin"]) >= minimum_margin
+        confidence_allowed = (
+            not filter_by_confidence
+            or row.get("label_confidence") in allowed_confidence
+        )
+        return bool(row["retain"]) and confidence_allowed and (
+            float(row["label_margin"]) >= minimum_margin
         )
 
     eligible_pairs = all_pairs.filter(eligible)
@@ -175,12 +188,20 @@ def main() -> None:
     eval_strategy = str(config.get("eval_strategy", "epoch"))
     save_strategy = str(config.get("save_strategy", eval_strategy))
     dtype_key = "dtype" if int(transformers_version.split(".", 1)[0]) >= 5 else "torch_dtype"
+    warmup_steps_value = config.get("warmup_steps")
+    warmup_steps = int(warmup_steps_value) if warmup_steps_value is not None else 0
+    warmup_ratio = (
+        0.0
+        if warmup_steps_value is not None
+        else float(config.get("warmup_ratio", 0.0))
+    )
     training_args = DPOConfig(
         output_dir=str(output_dir),
         beta=float(config.get("beta", 0.1)),
         loss_type=str(config.get("loss_type", "sigmoid")),
         learning_rate=float(config.get("learning_rate", 5e-7)),
-        warmup_steps=int(config.get("warmup_steps", 2)),
+        warmup_steps=warmup_steps,
+        warmup_ratio=warmup_ratio,
         num_train_epochs=float(config.get("num_train_epochs", 1)),
         per_device_train_batch_size=int(config.get("per_device_train_batch_size", 1)),
         per_device_eval_batch_size=int(config.get("per_device_eval_batch_size", 1)),
@@ -266,6 +287,9 @@ def main() -> None:
             ["torch", "transformers", "datasets", "trl", "accelerate"]
         ),
         "pairs_file": str(pairs_path),
+        "label_mode": expected_label_mode,
+        "filter_by_confidence": filter_by_confidence,
+        "allowed_confidence": sorted(allowed_confidence) if filter_by_confidence else None,
         "eligible_pairs_before_caps": eligible_counts_before_caps,
         "eligible_pairs": {split: len(dataset) for split, dataset in split_datasets.items()},
         "dropped_for_length": dropped_for_length,

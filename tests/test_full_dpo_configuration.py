@@ -47,6 +47,23 @@ class FullDPOConfigurationTests(unittest.TestCase):
         self.assertIn("sanity_use_train_as_validation: true", config)
         self.assertIn("output_dir: outputs/dpo-overfit-sanity", config)
 
+    def test_1500_pilot_is_explicitly_single_judge_and_full_parameter(self) -> None:
+        config = (ROOT / "configs/pilot_1500_lfm.yaml").read_text(encoding="utf-8")
+        self.assertIn("model_id: LiquidAI/LFM2.5-1.2B-Instruct", config)
+        self.assertIn("training_method: full_parameter_dpo", config)
+        self.assertIn("label_mode: single_judge_pilot", config)
+        self.assertIn("filter_by_confidence: false", config)
+        self.assertIn("warmup_ratio: 0.03", config)
+
+    def test_pilot_notebook_is_concise_and_has_no_saved_outputs(self) -> None:
+        notebook_path = ROOT / "notebooks/SDT_1500_DPO_Pilot_Colab.ipynb"
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        self.assertEqual(notebook["nbformat"], 4)
+        self.assertLessEqual(len(notebook["cells"]), 24)
+        self.assertTrue(
+            all(not cell.get("outputs") for cell in notebook["cells"] if cell["cell_type"] == "code")
+        )
+
     def test_colab_notebook_is_valid_and_has_no_saved_outputs(self) -> None:
         notebook_path = ROOT / "notebooks/SDT_Full_DPO_Colab.ipynb"
         notebook = json.loads(notebook_path.read_text(encoding="utf-8"))

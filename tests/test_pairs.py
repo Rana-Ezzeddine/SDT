@@ -8,6 +8,7 @@ from sdt_dpo.pairs import (
     assign_split,
     build_pairs,
     construct_pair,
+    summarize_judgment_evidence,
     valid_judge_scores,
     validate_no_prompt_leakage,
 )
@@ -18,6 +19,8 @@ def judgment(judge: str, scores: list[float], status: str = "success") -> dict:
         "judge_model": judge,
         "status": status,
         "scores": [{"judge_score": score} for score in scores],
+        "score_avg": sum(scores) / len(scores) if scores else 0.0,
+        "score_std": 0.25,
     }
 
 
@@ -64,6 +67,75 @@ class PairPreparationTests(unittest.TestCase):
         self.assertEqual(pair["judge_agreement"], 1.0)
         self.assertEqual(pair["pair_weight"], 1.0)
         self.assertIs(pair["retain"], True)
+
+    def test_supplied_aggregates_are_used_without_recalculating_attempts(self) -> None:
+        evaluation = {
+            "judgments": [
+                {
+                    "judge_model": "j1",
+                    "status": "success",
+                    "scores": [{"judge_score": 1.0}, {"judge_score": 1.0}],
+                    "score_avg": 4.25,
+                    "score_std": 0.4,
+                }
+            ]
+        }
+        scores = valid_judge_scores(evaluation, use_supplied_aggregates=True)
+        self.assertEqual(scores["j1"]["mean"], 4.25)
+        self.assertEqual(scores["j1"]["repeat_std"], 0.4)
+        self.assertEqual(scores["j1"]["valid_attempts"], 2.0)
+
+    def test_single_judge_pilot_retains_pair_without_fake_confidence(self) -> None:
+        record = sample_record()
+        for evaluation in record["evaluations"].values():
+            evaluation["judgments"] = evaluation["judgments"][:1]
+        pairs = build_pairs(
+            [record],
+            min_common_judges=1,
+            label_mode="single_judge_pilot",
+            use_supplied_aggregates=True,
+        )
+        self.assertEqual(len(pairs), 3)
+        self.assertTrue(all(pair["retain"] for pair in pairs))
+        self.assertTrue(all(pair["confidence_score"] is None for pair in pairs))
+        self.assertTrue(all(pair["judge_agreement"] is None for pair in pairs))
+        self.assertTrue(
+            all(pair["label_confidence"] == "single_judge_pilot" for pair in pairs)
+        )
+
+    def test_single_judge_mode_rejects_failed_zero_placeholder(self) -> None:
+        record = sample_record()
+        record["evaluations"]["a"]["judgments"] = [
+            judgment("j1", [], status="failed")
+        ]
+        record["evaluations"]["b"]["judgments"] = [judgment("j1", [2, 2, 2])]
+        pair = construct_pair(
+            record,
+            "a",
+            "b",
+            split="train",
+            min_common_judges=1,
+            min_margin=0.10,
+            min_confidence=0.60,
+            score_span=4.0,
+            label_mode="single_judge_pilot",
+            use_supplied_aggregates=True,
+        )
+        self.assertFalse(pair["retain"])
+        self.assertIn(
+            "insufficient_common_successful_judges", pair["exclusion_reasons"]
+        )
+
+    def test_judgment_audit_reports_duplicate_attempt_texts(self) -> None:
+        record = sample_record()
+        record["evaluations"]["a"]["judgments"][0]["scores"] = [
+            {"judge_score": 5, "judge_response": "same"},
+            {"judge_score": 5, "judge_response": "same"},
+            {"judge_score": 4, "judge_response": "different"},
+        ]
+        report = summarize_judgment_evidence([record])
+        self.assertEqual(report["judgment_blocks"], 6)
+        self.assertEqual(report["unique_judge_response_texts_per_block"]["2"], 1)
 
     def test_three_candidates_make_three_pairs(self) -> None:
         pairs = build_pairs([sample_record()])

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PARAMETER = "model.layers.0.self_attn.q_proj.weight"
+DEFAULT_PARAMETER = "auto"
 
 
 def _load_parameter(
@@ -27,6 +27,15 @@ def _load_parameter(
         low_cpu_mem_usage=True,
     )
     parameters = dict(model.named_parameters())
+    if parameter_name == "auto":
+        parameter_name = next(
+            (
+                name
+                for name, parameter in parameters.items()
+                if parameter.is_floating_point() and parameter.ndim >= 2
+            ),
+            "",
+        )
     if parameter_name not in parameters:
         preview = sorted(parameters)[:20]
         raise ValueError(
@@ -77,7 +86,7 @@ def main() -> None:
     )
     trained, trained_metadata = _load_parameter(
         args.trained_model,
-        args.parameter,
+        str(baseline_metadata["parameter"]),
         torch=torch,
         auto_model=AutoModelForCausalLM,
         transformers_version=transformers_version,

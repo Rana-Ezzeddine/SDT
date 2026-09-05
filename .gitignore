@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 outputs/
+data/raw/sdt_results_1500.json
 data/processed/*
 !data/processed/.gitkeep
 !data/processed/dpo_pairs.jsonl

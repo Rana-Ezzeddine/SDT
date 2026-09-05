@@ -1,0 +1,31 @@
+# Provisional one-judge pilot. Do not use this configuration for the final
+# multi-judge experiment.
+model_id: LiquidAI/LFM2.5-1.2B-Instruct
+training_method: full_parameter_dpo
+label_mode: single_judge_pilot
+pairs_file: data/processed/dpo_pairs_1500.jsonl
+output_dir: outputs/lfm25-1500-full-dpo
+
+# Pair preparation already applies the pilot eligibility rules. A single judge
+# cannot provide meaningful cross-judge confidence, so training must not filter
+# the retained pairs by the old confidence labels.
+filter_by_confidence: false
+min_label_margin: 0.10
+max_train_samples: null
+max_validation_samples: null
+
+beta: 0.10
+loss_type: sigmoid
+learning_rate: 5.0e-7
+warmup_ratio: 0.03
+num_train_epochs: 1
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+max_length: 2048
+precompute_ref_log_probs: true
+
+eval_strategy: epoch
+save_strategy: epoch
+logging_steps: 10
+seed: 42

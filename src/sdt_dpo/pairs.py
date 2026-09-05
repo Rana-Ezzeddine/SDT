@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 
 SPLITS = ("train", "validation", "test")
+LABEL_MODES = ("multi_judge", "single_judge_pilot")
 
 
 def _number(value: Any) -> float | None:
@@ -58,7 +59,11 @@ def assign_split(
     return "test"
 
 
-def valid_judge_scores(evaluation: dict[str, Any]) -> dict[str, dict[str, float]]:
+def valid_judge_scores(
+    evaluation: dict[str, Any],
+    *,
+    use_supplied_aggregates: bool = False,
+) -> dict[str, dict[str, float]]:
     """Return valid per-judge means and repeat variability.
 
     Failed judgments are omitted. They are never converted to numeric zero.
@@ -78,12 +83,16 @@ def valid_judge_scores(evaluation: dict[str, Any]) -> dict[str, dict[str, float]
             if (score := _number(item.get("judge_score"))) is not None
         ]
         reported_avg = _number(judgment.get("score_avg"))
-        if attempts:
+        reported_std = _number(judgment.get("score_std"))
+        if use_supplied_aggregates and reported_avg is not None:
+            mean_score = reported_avg
+            repeat_std = reported_std if reported_std is not None else 0.0
+        elif attempts:
             mean_score = statistics.fmean(attempts)
             repeat_std = statistics.pstdev(attempts) if len(attempts) > 1 else 0.0
         elif reported_avg is not None:
             mean_score = reported_avg
-            repeat_std = _number(judgment.get("score_std")) or 0.0
+            repeat_std = reported_std or 0.0
         else:
             continue
 
@@ -113,15 +122,25 @@ def construct_pair(
     min_margin: float,
     min_confidence: float,
     score_span: float,
+    label_mode: str = "multi_judge",
+    use_supplied_aggregates: bool = False,
 ) -> dict[str, Any]:
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}")
     prompt = str(record.get("instruction", "")).strip()
     responses = record.get("responses", {}) or {}
     evaluations = record.get("evaluations", {}) or {}
     text_a = str(responses.get(source_a, "")).strip()
     text_b = str(responses.get(source_b, "")).strip()
 
-    judges_a = valid_judge_scores(evaluations.get(source_a, {}) or {})
-    judges_b = valid_judge_scores(evaluations.get(source_b, {}) or {})
+    judges_a = valid_judge_scores(
+        evaluations.get(source_a, {}) or {},
+        use_supplied_aggregates=use_supplied_aggregates,
+    )
+    judges_b = valid_judge_scores(
+        evaluations.get(source_b, {}) or {},
+        use_supplied_aggregates=use_supplied_aggregates,
+    )
     common_judges = sorted(set(judges_a) & set(judges_b))
     expected_judges = set()
     for evaluation in evaluations.values():
@@ -162,9 +181,19 @@ def construct_pair(
         for value in (judges_a[judge]["repeat_std"], judges_b[judge]["repeat_std"])
     ]
     average_repeat_std = statistics.fmean(repeat_stds) if repeat_stds else 0.0
-    consistency = max(0.0, 1.0 - average_repeat_std / score_span)
-    confidence_score = agreement * coverage * consistency
-    confidence_label = _confidence_label(confidence_score)
+    if label_mode == "single_judge_pilot":
+        # A single judge cannot provide cross-judge agreement. Keep its supplied
+        # repeat variability for diagnosis, but do not turn it into a confidence
+        # heuristic or use it to filter pilot pairs.
+        agreement_value: float | None = None
+        consistency: float | None = None
+        confidence_score: float | None = None
+        confidence_label = "single_judge_pilot"
+    else:
+        agreement_value = agreement
+        consistency = max(0.0, 1.0 - average_repeat_std / score_span)
+        confidence_score = agreement * coverage * consistency
+        confidence_label = _confidence_label(confidence_score)
     label_margin = abs(mean_delta)
 
     exclusion_reasons: list[str] = []
@@ -180,7 +209,11 @@ def construct_pair(
         exclusion_reasons.append("aggregate_tie")
     if label_margin < min_margin:
         exclusion_reasons.append("margin_below_threshold")
-    if confidence_score < min_confidence:
+    if (
+        label_mode == "multi_judge"
+        and confidence_score is not None
+        and confidence_score < min_confidence
+    ):
         exclusion_reasons.append("confidence_below_threshold")
 
     preferred = str(record.get("preferred_response", "")).strip()
@@ -227,12 +260,19 @@ def construct_pair(
         "label_margin": label_margin,
         "label_confidence": confidence_label,
         "confidence_score": confidence_score,
-        "judge_agreement": agreement,
+        "judge_agreement": agreement_value,
         "judge_coverage": coverage,
         "repeat_consistency": consistency,
         "average_repeat_std": average_repeat_std,
         "common_successful_judges": len(common_judges),
         "expected_judges": len(expected_judges),
+        "label_mode": label_mode,
+        "evidence_type": (
+            "single_model_repeated_attempts"
+            if label_mode == "single_judge_pilot"
+            else "multiple_judge_models"
+        ),
+        "uses_supplied_score_aggregates": use_supplied_aggregates,
         "raw_preferred_response": preferred,
         "preferred_field_agrees": preferred_field_agrees,
         "pair_weight": 1.0,
@@ -251,7 +291,13 @@ def build_pairs(
     min_margin: float = 0.10,
     min_confidence: float = 0.60,
     score_span: float = 4.0,
+    label_mode: str = "multi_judge",
+    use_supplied_aggregates: bool = False,
 ) -> list[dict[str, Any]]:
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}")
+    if label_mode == "single_judge_pilot" and min_common_judges != 1:
+        raise ValueError("single_judge_pilot requires min_common_judges=1")
     pairs: list[dict[str, Any]] = []
     for record in records:
         prompt = str(record.get("instruction", ""))
@@ -273,6 +319,8 @@ def build_pairs(
                     min_margin=min_margin,
                     min_confidence=min_confidence,
                     score_span=score_span,
+                    label_mode=label_mode,
+                    use_supplied_aggregates=use_supplied_aggregates,
                 )
             )
     return pairs
@@ -303,6 +351,9 @@ def summarize_pairs(pairs: list[dict[str, Any]], record_count: int) -> dict[str,
         "retained_by_confidence": dict(
             Counter(pair["label_confidence"] for pair in retained)
         ),
+        "retained_by_label_mode": dict(
+            Counter(pair.get("label_mode", "multi_judge") for pair in retained)
+        ),
         "retained_by_comparison_type": dict(
             Counter(pair["comparison_type"] for pair in retained)
         ),
@@ -318,6 +369,59 @@ def summarize_pairs(pairs: list[dict[str, Any]], record_count: int) -> dict[str,
             "failed_judgment_handling": "excluded; never converted to zero",
             "label_margin_units": "raw judge-score units",
             "pair_weight": "1.0 for the equal-weight DPO baseline",
+            "confidence_filtering": (
+                "disabled for single_judge_pilot"
+                if any(pair.get("label_mode") == "single_judge_pilot" for pair in pairs)
+                else "agreement x coverage x repeat-consistency threshold"
+            ),
+            "pilot_note": (
+                "single_judge_pilot labels are provisional and do not estimate "
+                "cross-judge confidence"
+                if any(pair.get("label_mode") == "single_judge_pilot" for pair in pairs)
+                else None
+            ),
+        },
+    }
+
+
+def summarize_judgment_evidence(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize judgment coverage and repeated-output duplication for auditing."""
+
+    statuses: Counter[str] = Counter()
+    judge_models: Counter[str] = Counter()
+    attempts_per_block: Counter[int] = Counter()
+    unique_texts_per_block: Counter[int] = Counter()
+    supplied_repeat_stds: list[float] = []
+    block_count = 0
+    for record in records:
+        for evaluation in (record.get("evaluations", {}) or {}).values():
+            for judgment in (evaluation or {}).get("judgments", []) or []:
+                block_count += 1
+                statuses[str(judgment.get("status", "missing")).lower()] += 1
+                judge = str(judgment.get("judge_model", "")).strip()
+                if judge:
+                    judge_models[judge] += 1
+                attempts = list(judgment.get("scores", []) or [])
+                attempts_per_block[len(attempts)] += 1
+                texts = [str(item.get("judge_response", "")) for item in attempts]
+                unique_texts_per_block[len(set(texts))] += 1
+                supplied_std = _number(judgment.get("score_std"))
+                if supplied_std is not None:
+                    supplied_repeat_stds.append(supplied_std)
+
+    return {
+        "judgment_blocks": block_count,
+        "status_counts": dict(statuses),
+        "judge_models": dict(judge_models),
+        "attempts_per_block": {str(key): value for key, value in sorted(attempts_per_block.items())},
+        "unique_judge_response_texts_per_block": {
+            str(key): value for key, value in sorted(unique_texts_per_block.items())
+        },
+        "supplied_repeat_std": {
+            "n": len(supplied_repeat_stds),
+            "mean": statistics.fmean(supplied_repeat_stds) if supplied_repeat_stds else None,
+            "median": statistics.median(supplied_repeat_stds) if supplied_repeat_stds else None,
+            "max": max(supplied_repeat_stds) if supplied_repeat_stds else None,
         },
     }
 
@@ -340,6 +444,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-common-judges", type=int, default=2)
     parser.add_argument("--min-margin", type=float, default=0.10)
     parser.add_argument("--min-confidence", type=float, default=0.60)
+    parser.add_argument("--label-mode", choices=LABEL_MODES, default="multi_judge")
+    parser.add_argument(
+        "--use-supplied-aggregates",
+        action="store_true",
+        help="Use each successful judgment's supplied score_avg and score_std.",
+    )
     parser.add_argument(
         "--score-span",
         type=float,
@@ -365,11 +475,14 @@ def main() -> None:
         min_margin=args.min_margin,
         min_confidence=args.min_confidence,
         score_span=args.score_span,
+        label_mode=args.label_mode,
+        use_supplied_aggregates=args.use_supplied_aggregates,
     )
     validate_no_prompt_leakage(pairs)
     write_jsonl(args.output, pairs)
 
     report = summarize_pairs(pairs, len(records))
+    report["judgment_evidence"] = summarize_judgment_evidence(records)
     report["configuration"] = {
         "seed": args.seed,
         "train_share": args.train_share,
@@ -377,8 +490,12 @@ def main() -> None:
         "test_share": round(1.0 - args.train_share - args.validation_share, 10),
         "min_common_judges": args.min_common_judges,
         "min_margin": args.min_margin,
-        "min_confidence": args.min_confidence,
+        "min_confidence": (
+            args.min_confidence if args.label_mode == "multi_judge" else None
+        ),
         "score_span": args.score_span,
+        "label_mode": args.label_mode,
+        "use_supplied_aggregates": args.use_supplied_aggregates,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
