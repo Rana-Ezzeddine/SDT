@@ -5,6 +5,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from sdt_dpo.train import _resolve_warmup_steps
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +56,24 @@ class FullDPOConfigurationTests(unittest.TestCase):
         self.assertIn("label_mode: single_judge_pilot", config)
         self.assertIn("filter_by_confidence: false", config)
         self.assertIn("warmup_ratio: 0.03", config)
+
+    def test_warmup_ratio_is_resolved_without_passing_it_to_dpo_config(self) -> None:
+        config = {
+            "warmup_ratio": 0.03,
+            "num_train_epochs": 1,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 8,
+        }
+        self.assertEqual(_resolve_warmup_steps(config, 3051, world_size=1), 12)
+        trainer = (ROOT / "src/sdt_dpo/train.py").read_text(encoding="utf-8")
+        dpo_config_call = trainer.split("training_args = DPOConfig(", 1)[1].split(
+            "\n    )", 1
+        )[0]
+        self.assertNotIn("warmup_ratio=", dpo_config_call)
+
+    def test_explicit_warmup_steps_take_precedence(self) -> None:
+        config = {"warmup_steps": 5, "warmup_ratio": 0.50}
+        self.assertEqual(_resolve_warmup_steps(config, 3051, world_size=1), 5)
 
     def test_pilot_notebook_is_concise_and_has_no_saved_outputs(self) -> None:
         notebook_path = ROOT / "notebooks/SDT_1500_DPO_Pilot_Colab.ipynb"

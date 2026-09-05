@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import math
+import os
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +50,33 @@ def _precision(torch: Any) -> tuple[Any, bool, bool, str]:
         # Float32 is slower but is the safest default for an initial Mac run.
         return torch.float32, False, False, "mps-float32"
     return torch.float32, False, False, "cpu-float32"
+
+
+def _resolve_warmup_steps(
+    config: dict[str, Any], train_examples: int, world_size: int = 1
+) -> int:
+    """Resolve either an explicit step count or a ratio to concrete optimizer steps.
+
+    Some TRL/Transformers combinations expose ``warmup_steps`` but not
+    ``warmup_ratio`` on DPOConfig. Resolving the ratio here keeps the experiment
+    definition portable while producing the same fixed number of warmup updates.
+    """
+    explicit_steps = config.get("warmup_steps")
+    if explicit_steps is not None:
+        return int(explicit_steps)
+
+    ratio = float(config.get("warmup_ratio", 0.0))
+    if ratio <= 0.0:
+        return 0
+
+    per_device_batch = int(config.get("per_device_train_batch_size", 1))
+    accumulation = int(config.get("gradient_accumulation_steps", 1))
+    epochs = float(config.get("num_train_epochs", 1.0))
+    replicas = max(1, int(world_size))
+    batches_per_epoch = math.ceil(train_examples / (per_device_batch * replicas))
+    updates_per_epoch = math.ceil(batches_per_epoch / accumulation)
+    total_updates = math.ceil(updates_per_epoch * epochs)
+    return math.ceil(total_updates * ratio)
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,20 +217,17 @@ def main() -> None:
     eval_strategy = str(config.get("eval_strategy", "epoch"))
     save_strategy = str(config.get("save_strategy", eval_strategy))
     dtype_key = "dtype" if int(transformers_version.split(".", 1)[0]) >= 5 else "torch_dtype"
-    warmup_steps_value = config.get("warmup_steps")
-    warmup_steps = int(warmup_steps_value) if warmup_steps_value is not None else 0
-    warmup_ratio = (
-        0.0
-        if warmup_steps_value is not None
-        else float(config.get("warmup_ratio", 0.0))
+    world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    warmup_steps = _resolve_warmup_steps(
+        config, train_examples=len(train_dpo), world_size=world_size
     )
+    print(f"Effective warmup optimizer steps: {warmup_steps}")
     training_args = DPOConfig(
         output_dir=str(output_dir),
         beta=float(config.get("beta", 0.1)),
         loss_type=str(config.get("loss_type", "sigmoid")),
         learning_rate=float(config.get("learning_rate", 5e-7)),
         warmup_steps=warmup_steps,
-        warmup_ratio=warmup_ratio,
         num_train_epochs=float(config.get("num_train_epochs", 1)),
         per_device_train_batch_size=int(config.get("per_device_train_batch_size", 1)),
         per_device_eval_batch_size=int(config.get("per_device_eval_batch_size", 1)),
@@ -278,6 +304,7 @@ def main() -> None:
         "training_method": "full_parameter_dpo",
         "sanity_use_train_as_validation": sanity_use_train_as_validation,
         "model_id": model_id,
+        "effective_warmup_steps": warmup_steps,
         "trainable_parameters": trainable_parameters,
         "total_parameters": total_parameters,
         "precision": precision_name,
