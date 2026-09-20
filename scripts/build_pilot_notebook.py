@@ -55,9 +55,9 @@ if REPO_DIR.exists():
 else:
     subprocess.run(["git", "clone", "--branch", BRANCH, "--single-branch", REPO_URL, str(REPO_DIR)], check=True)
 os.chdir(REPO_DIR)
-subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True)
 GIT_COMMIT = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 assert not subprocess.check_output(["git", "status", "--porcelain"], text=True).strip(), "Repository must be clean."
+subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True)
 print("Branch:", subprocess.check_output(["git", "branch", "--show-current"], text=True).strip())
 print("Commit:", GIT_COMMIT)
 """
