@@ -66,6 +66,45 @@ def main() -> None:
     if not prompts:
         raise ValueError("max_prompts removed every prompt")
 
+    expected_generation = {
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "seed": args.seed,
+    }
+    completed: dict[str, dict[str, Any]] = {}
+    if args.output.exists():
+        with args.output.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                prompt_id = str(row["prompt_id"])
+                if prompt_id in completed:
+                    raise ValueError(f"Duplicate prompt_id {prompt_id} in {args.output}")
+                if str(row.get("model")) != args.model:
+                    raise ValueError(
+                        "Existing generation output used a different model; use a new output file"
+                    )
+                recorded = row.get("generation", {})
+                for key, value in expected_generation.items():
+                    if recorded.get(key) != value:
+                        raise ValueError(
+                            "Existing generation output used different decoding settings; "
+                            "use a new output file"
+                        )
+                completed[prompt_id] = row
+
+    prompt_lookup = {item["prompt_id"]: item["prompt"] for item in prompts}
+    unexpected = set(completed) - set(prompt_lookup)
+    if unexpected:
+        raise ValueError(
+            f"Existing generation output contains unexpected prompt IDs: {sorted(unexpected)[:5]}"
+        )
+    for prompt_id, row in completed.items():
+        if str(row.get("prompt")) != prompt_lookup[prompt_id]:
+            raise ValueError(f"Prompt text changed for prompt_id {prompt_id}")
+    if len(completed) == len(prompts):
+        print(f"Generation output is already complete: {len(completed)}/{len(prompts)} prompts")
+        return
+
     torch.manual_seed(args.seed)
     device, dtype, precision = _device_and_dtype(torch)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -78,8 +117,11 @@ def main() -> None:
     model.eval()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", encoding="utf-8") as handle:
+    mode = "a" if completed else "w"
+    with args.output.open(mode, encoding="utf-8") as handle:
         for index, item in enumerate(prompts, start=1):
+            if item["prompt_id"] in completed:
+                continue
             rendered = tokenizer.apply_chat_template(
                 [{"role": "user", "content": item["prompt"]}],
                 tokenize=False,
@@ -122,6 +164,7 @@ def main() -> None:
                 },
             }
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
             if index % 10 == 0 or index == len(prompts):
                 print(f"Generated {index}/{len(prompts)} prompts")
 

@@ -10,6 +10,7 @@ from sdt_dpo.judge_generations import (
     DIMENSIONS,
     _dpo_is_a,
     _extract_json,
+    _normalized_response,
     _validate_judgment,
     summarize,
 )
@@ -30,6 +31,10 @@ class PilotEvaluationTests(unittest.TestCase):
 
     def test_blind_order_is_deterministic(self) -> None:
         self.assertEqual(_dpo_is_a("prompt", 42), _dpo_is_a("prompt", 42))
+
+    def test_identical_response_normalization_only_ignores_whitespace(self) -> None:
+        self.assertEqual(_normalized_response("same\n answer"), "same answer")
+        self.assertNotEqual(_normalized_response("Same answer"), "same answer")
 
     def test_judge_json_and_summary(self) -> None:
         scores = {dimension: 4 for dimension in DIMENSIONS}
@@ -62,7 +67,30 @@ class PilotEvaluationTests(unittest.TestCase):
         self.assertEqual(report["dpo_wins"], 1)
         self.assertEqual(report["ties"], 1)
         self.assertEqual(report["tie_adjusted_dpo_score"], 0.75)
+        self.assertEqual(report["api_judged_n"], 2)
         self.assertEqual(report["mean_dimension_delta_dpo_minus_baseline"]["autonomy"], 0.5)
+
+    def test_deterministic_identical_ties_do_not_fabricate_dimension_scores(self) -> None:
+        rows = [
+            {
+                "winner": "dpo",
+                "judgment_type": "llm_judge",
+                "baseline_scores": {dimension: 3 for dimension in DIMENSIONS},
+                "dpo_scores": {dimension: 4 for dimension in DIMENSIONS},
+            },
+            {
+                "winner": "tie",
+                "judgment_type": "deterministic_identical_response",
+            },
+        ]
+        report = summarize(rows)
+        self.assertEqual(report["n"], 2)
+        self.assertEqual(report["api_judged_n"], 1)
+        self.assertEqual(report["deterministic_identical_ties"], 1)
+        self.assertEqual(report["tie_adjusted_dpo_score"], 0.75)
+        self.assertEqual(
+            report["mean_dimension_delta_dpo_minus_baseline"]["autonomy"], 1.0
+        )
 
 
 if __name__ == "__main__":

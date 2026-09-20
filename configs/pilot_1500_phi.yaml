@@ -1,0 +1,36 @@
+# Reproduction of the validation-selected Phi pilot configuration.
+# The test set must remain locked until this checkpoint is frozen.
+model_id: microsoft/Phi-4-mini-instruct
+training_method: full_parameter_dpo
+label_mode: single_judge_pilot
+pairs_file: data/processed/dpo_pairs_1500.jsonl
+output_dir: outputs/phi4-mini-1500-full-dpo
+
+filter_by_confidence: false
+min_label_margin: 0.10
+max_train_samples: null
+max_validation_samples: null
+
+beta: 0.10
+loss_type: sigmoid
+label_smoothing: 0.0
+learning_rate: 1.0e-6
+warmup_ratio: 0.03
+num_train_epochs: 1
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+max_length: 1536
+precompute_ref_log_probs: true
+
+# Roughly four validation checks across the 3,085-pair pilot training split.
+# The best reward-accuracy checkpoint is loaded before the final model is saved.
+eval_strategy: steps
+eval_steps: 96
+save_strategy: steps
+save_steps: 96
+save_total_limit: 2
+metric_for_best_model: eval_rewards/accuracies
+greater_is_better: true
+logging_steps: 10
+seed: 42

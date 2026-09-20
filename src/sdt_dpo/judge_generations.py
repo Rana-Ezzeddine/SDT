@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import statistics
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,42 @@ DIMENSIONS = (
     "integrity",
     "relevance",
 )
+
+JUDGE_PROMPT_VERSION = "sdt-blind-pairwise-v2"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _normalized_response(text: Any) -> str:
+    """Normalize inconsequential whitespace before detecting identical outputs."""
+
+    return " ".join(str(text).split())
+
+
+def _judge_config_fingerprint(
+    *,
+    baseline_path: Path,
+    dpo_path: Path,
+    judge_model: str,
+    api_url: str,
+    seed: int,
+) -> tuple[str, dict[str, Any]]:
+    manifest = {
+        "prompt_version": JUDGE_PROMPT_VERSION,
+        "baseline_sha256": _sha256(baseline_path),
+        "dpo_sha256": _sha256(dpo_path),
+        "judge_model": judge_model,
+        "api_url": api_url,
+        "order_randomization_seed": seed,
+    }
+    encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), manifest
 
 
 def _read_generations(path: Path) -> dict[str, dict[str, Any]]:
@@ -112,16 +149,28 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     baseline_wins = sum(row["winner"] == "baseline" for row in rows)
     ties = sum(row["winner"] == "tie" for row in rows)
     non_ties = dpo_wins + baseline_wins
+    scored_rows = [
+        row for row in rows if "dpo_scores" in row and "baseline_scores" in row
+    ]
     dimension_deltas = {
-        dimension: statistics.fmean(
-            float(row["dpo_scores"][dimension])
-            - float(row["baseline_scores"][dimension])
-            for row in rows
+        dimension: (
+            statistics.fmean(
+                float(row["dpo_scores"][dimension])
+                - float(row["baseline_scores"][dimension])
+                for row in scored_rows
+            )
+            if scored_rows
+            else None
         )
         for dimension in DIMENSIONS
     }
     return {
         "n": len(rows),
+        "api_judged_n": len(scored_rows),
+        "deterministic_identical_ties": sum(
+            row.get("judgment_type") == "deterministic_identical_response"
+            for row in rows
+        ),
         "dpo_wins": dpo_wins,
         "baseline_wins": baseline_wins,
         "ties": ties,
@@ -188,11 +237,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key-env", default="JUDGE_API_KEY")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--retry-backoff", type=float, default=2.0)
+    parser.add_argument(
+        "--failures",
+        type=Path,
+        help="Optional JSONL log of failed API or parsing attempts.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
+    if args.retry_backoff < 0:
+        raise ValueError("retry_backoff must be nonnegative")
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         raise ValueError(f"Missing API key environment variable: {args.api_key_env}")
@@ -203,11 +263,24 @@ def main() -> None:
             "Baseline and DPO generation files must contain exactly the same nonempty prompt IDs"
         )
 
+    config_fingerprint, judge_manifest = _judge_config_fingerprint(
+        baseline_path=args.baseline,
+        dpo_path=args.dpo,
+        judge_model=args.judge_model,
+        api_url=args.api_url,
+        seed=args.seed,
+    )
+
     completed: dict[str, dict[str, Any]] = {}
     if args.details.exists():
         with args.details.open("r", encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
+                if row.get("judge_config_fingerprint") != config_fingerprint:
+                    raise ValueError(
+                        "Existing judgment details were created with a different judge "
+                        "configuration or generation input. Use a new details file."
+                    )
                 completed[str(row["prompt_id"])] = row
 
     args.details.parent.mkdir(parents=True, exist_ok=True)
@@ -220,17 +293,61 @@ def main() -> None:
             after = dpo[prompt_id]
             if str(before["prompt"]) != str(after["prompt"]):
                 raise ValueError(f"Prompt text differs for prompt_id {prompt_id}")
+            if _normalized_response(before["response"]) == _normalized_response(
+                after["response"]
+            ):
+                row = {
+                    "prompt_id": prompt_id,
+                    "prompt": before["prompt"],
+                    "winner": "tie",
+                    "judgment_type": "deterministic_identical_response",
+                    "reason": "Baseline and DPO responses are identical after whitespace normalization.",
+                    "judge_model": None,
+                    "judge_config_fingerprint": config_fingerprint,
+                    "prompt_version": JUDGE_PROMPT_VERSION,
+                }
+                completed[prompt_id] = row
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.flush()
+                print(f"Recorded deterministic tie {index}/{len(baseline)} prompts")
+                continue
             dpo_is_a = _dpo_is_a(prompt_id, args.seed)
             response_a = after["response"] if dpo_is_a else before["response"]
             response_b = before["response"] if dpo_is_a else after["response"]
-            raw = _call_api(
-                api_url=args.api_url,
-                api_key=api_key,
-                model=args.judge_model,
-                prompt=_judge_prompt(str(before["prompt"]), response_a, response_b),
-                timeout=args.timeout,
-            )
-            judged = _validate_judgment(_extract_json(raw))
+            raw = ""
+            judged: dict[str, Any] | None = None
+            for attempt in range(1, args.max_retries + 1):
+                try:
+                    raw = _call_api(
+                        api_url=args.api_url,
+                        api_key=api_key,
+                        model=args.judge_model,
+                        prompt=_judge_prompt(
+                            str(before["prompt"]), response_a, response_b
+                        ),
+                        timeout=args.timeout,
+                    )
+                    judged = _validate_judgment(_extract_json(raw))
+                    break
+                except Exception as error:
+                    failure = {
+                        "prompt_id": prompt_id,
+                        "attempt": attempt,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "judge_config_fingerprint": config_fingerprint,
+                    }
+                    if args.failures:
+                        args.failures.parent.mkdir(parents=True, exist_ok=True)
+                        with args.failures.open("a", encoding="utf-8") as failure_handle:
+                            failure_handle.write(json.dumps(failure) + "\n")
+                    if attempt == args.max_retries:
+                        raise RuntimeError(
+                            f"Judge failed for prompt {prompt_id} after "
+                            f"{args.max_retries} attempts"
+                        ) from error
+                    time.sleep(args.retry_backoff * (2 ** (attempt - 1)))
+            assert judged is not None
             winner = (
                 "tie"
                 if judged["winner"] == "tie"
@@ -246,7 +363,10 @@ def main() -> None:
                 "baseline_scores": judged["scores"]["B" if dpo_is_a else "A"],
                 "dpo_scores": judged["scores"]["A" if dpo_is_a else "B"],
                 "reason": judged["reason"],
+                "judgment_type": "llm_judge",
                 "judge_model": args.judge_model,
+                "judge_config_fingerprint": config_fingerprint,
+                "prompt_version": JUDGE_PROMPT_VERSION,
                 "raw_judge_response": raw,
             }
             completed[prompt_id] = row
@@ -257,6 +377,8 @@ def main() -> None:
     report = summarize([completed[prompt_id] for prompt_id in sorted(completed)])
     report["judge_model"] = args.judge_model
     report["order_randomization_seed"] = args.seed
+    report["judge_config_fingerprint"] = config_fingerprint
+    report["judge_manifest"] = judge_manifest
     args.summary.parent.mkdir(parents=True, exist_ok=True)
     args.summary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))

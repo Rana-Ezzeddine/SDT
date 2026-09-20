@@ -18,7 +18,7 @@ models.
 | Agreement | Calculated across judge models | Not defined (`null`) |
 | Confidence filtering | Enabled | Disabled |
 | Minimum common judges | 2 | 1 |
-| Target/reference checkpoint | Qwen2.5-0.5B-Instruct | LFM2.5-1.2B-Instruct |
+| Target/reference checkpoint | Qwen2.5-0.5B-Instruct | Phi-4-mini-instruct for the selected pilot run |
 | Evaluation | Stored preference pairs | Stored pairs plus fresh blind generation comparison |
 
 The DPO loss, equal pair weighting, prompt/chosen/rejected format, prompt-level
@@ -66,15 +66,23 @@ The test split remains locked while filters, hyperparameters, and the checkpoint
 are selected. Because this pilot is used for development, its prompts must not
 be reused in the final experiment's test partition.
 
-## Target model
+## Target model and selected pilot configuration
 
-The pilot uses `LiquidAI/LFM2.5-1.2B-Instruct`. The unchanged checkpoint is both
-the baseline and frozen DPO reference. The instruct checkpoint is used because
-there is no preceding SFT stage. Training updates every policy parameter; this
-is not LoRA.
+The focused pilot notebook uses `microsoft/Phi-4-mini-instruct`. The unchanged
+checkpoint is both the baseline and frozen DPO reference. The instruct
+checkpoint is used because there is no preceding SFT stage. Training updates
+every policy parameter; this is not LoRA.
 
-The configured maximum sequence length is 2,048. The Colab notebook reports the
-actual LFM-tokenized length distribution before training. Any rows removed for
+The completed validation sweep selected a learning rate of `1e-6`, beta `0.10`,
+and one epoch. The focused reproduction does not repeat the broad sweep. It
+evaluates about four times during the epoch and loads the checkpoint with the
+highest TRL validation reward accuracy before saving the final model. The
+external prompt-macro comparison remains the experiment-level validation
+summary.
+
+The configured maximum sequence length is 1,536 to keep full-parameter Phi
+training within the available A100 memory. The Colab notebook reports the
+actual Phi-tokenized length distribution before training. Any rows removed for
 length are recorded in the training manifest.
 
 ## Exact pipeline
@@ -84,31 +92,46 @@ length are recorded in the training manifest.
    aggregates.
 3. Review the judgment audit, exclusions, split counts, and duplicate-attempt
    counts.
-4. Run unit tests and inspect LFM token lengths.
-5. Evaluate candidate settings only on validation prompts. Optional tuning
-   compares candidates by prompt-macro implicit reward accuracy, then implicit
-   margin, then validation loss.
+4. Run unit tests and inspect Phi token lengths.
+5. Reproduce the already selected `1e-6`, beta `0.10`, one-epoch configuration.
+   Validate and save at regular intervals, then load the best within-epoch
+   checkpoint by validation reward accuracy.
 6. Freeze one checkpoint and verify that its parameters changed.
 7. Unlock the test once and evaluate baseline and DPO on identical stored pairs.
 8. Generate one fresh baseline response and one fresh DPO response for every
    eligible test prompt with identical decoding settings.
-9. Randomize A/B order and use an independent OpenAI-compatible judge endpoint
-   to report wins, ties, and seven SDT dimension deltas.
-10. Save the configuration, manifests, pair-level details, generations, raw
-    judge output, and summaries.
+9. Record whitespace-identical generations as deterministic ties. Randomize A/B
+   order for the remaining responses and use an independent OpenAI-compatible
+   judge endpoint to report wins, ties, and seven SDT dimension deltas.
+10. Create a unique run ID from the data, model, configuration, Git commit, and
+    timestamp. Copy the raw input, processed pairs, pair audit, resolved config,
+    dependency snapshot, final selected checkpoint, and evaluation artifacts to
+    Drive. Exclude large temporary step checkpoints, verify every copied file by
+    size, and require a nonempty final `*.safetensors` checkpoint.
 
 ## Run in Colab
 
 Open `notebooks/SDT_1500_DPO_Pilot_Colab.ipynb` from the
-`1500-record-dpo-pipeline` branch. Select a GPU runtime, run setup, upload
-`sdt_results_1500.json`, and execute through validation. Keep
+`1500-record-dpo-pipeline` branch. Select an A100 GPU runtime, run setup, upload
+the updated 1,500-record JSON, and execute through validation. The notebook
+uses `configs/pilot_1500_phi.yaml` and saves the selected model to Drive as soon
+as training and validation finish. Later test and generation artifacts are
+synced immediately after their stage. Generation and LLM judging are resumable;
+judge outputs are written directly to Drive. Keep
 `RUN_LOCKED_TEST = False` until the configuration is frozen, then change it to
 `True` and run the locked-test sections once.
 
 For generated-response judging, add `JUDGE_API_KEY` as a Colab secret and set an
 independent judge model and OpenAI-compatible chat-completions endpoint in the
 final cell. The judge is optional for pipeline debugging but required for the
-planned behavioral comparison.
+planned behavioral comparison. The judge cache is bound to the input hashes,
+model, endpoint, prompt version, and A/B seed so incompatible runs cannot be
+silently mixed.
+
+The Drive run is complete only when `backup-verification.json` lists the final
+weight files and the `reproducibility/` directory contains the raw data, pairs,
+pair report, exact notebook, resolved YAML, Git commit, package snapshot, and
+input hashes.
 
 ## Command-line pair preparation
 
@@ -128,14 +151,14 @@ sdt-build-pairs \
   --seed 42
 
 python -m unittest discover -s tests -v
-sdt-train-dpo --config configs/pilot_1500_lfm.yaml
+sdt-train-dpo --config configs/pilot_1500_phi.yaml
 ```
 
 The raw dataset and trained checkpoints are intentionally ignored by Git.
 
 ## Interpretation boundary
 
-A successful pilot demonstrates correct parsing, leakage control, LFM/TRL
+A successful pilot demonstrates correct parsing, leakage control, Phi/TRL
 compatibility, checkpoint movement, and measurable preliminary preference and
 behavioral signals. It does not establish robust SDT alignment because its
 labels come from one judge model and many repeated judge texts are duplicated.

@@ -57,6 +57,20 @@ class FullDPOConfigurationTests(unittest.TestCase):
         self.assertIn("filter_by_confidence: false", config)
         self.assertIn("warmup_ratio: 0.03", config)
 
+    def test_phi_pilot_reproduces_selected_configuration_and_selects_within_epoch(self) -> None:
+        config = (ROOT / "configs/pilot_1500_phi.yaml").read_text(encoding="utf-8")
+        self.assertIn("model_id: microsoft/Phi-4-mini-instruct", config)
+        self.assertIn("learning_rate: 1.0e-6", config)
+        self.assertIn("beta: 0.10", config)
+        self.assertIn("num_train_epochs: 1", config)
+        self.assertIn("max_length: 1536", config)
+        self.assertIn("eval_strategy: steps", config)
+        self.assertIn("metric_for_best_model: eval_rewards/accuracies", config)
+
+        trainer = (ROOT / "src/sdt_dpo/train.py").read_text(encoding="utf-8")
+        self.assertIn('config.get("label_smoothing", 0.0)', trainer)
+        self.assertIn('config.get("metric_for_best_model", "eval_rewards/accuracies")', trainer)
+
     def test_warmup_ratio_is_resolved_without_passing_it_to_dpo_config(self) -> None:
         config = {
             "warmup_ratio": 0.03,
@@ -83,6 +97,16 @@ class FullDPOConfigurationTests(unittest.TestCase):
         self.assertTrue(
             all(not cell.get("outputs") for cell in notebook["cells"] if cell["cell_type"] == "code")
         )
+        source = "\n".join(
+            "".join(cell.get("source", [])) for cell in notebook["cells"]
+        )
+        self.assertIn("sync_run_to_drive", source)
+        self.assertIn("Saved model weights are missing", source)
+        self.assertIn("backup-verification.json", source)
+        self.assertIn("resolved-training-config.yaml", source)
+        self.assertIn("pip-freeze.txt", source)
+        self.assertIn("generation-judge-failures.jsonl", source)
+        self.assertNotIn("EXPERIMENTS = [", source)
 
     def test_colab_notebook_is_valid_and_has_no_saved_outputs(self) -> None:
         notebook_path = ROOT / "notebooks/SDT_Full_DPO_Colab.ipynb"
