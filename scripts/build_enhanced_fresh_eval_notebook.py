@@ -28,11 +28,11 @@ cells = [
     markdown(
         """# Enhanced fresh-response evaluation
 
-Evaluation only—this notebook never trains or modifies the DPO checkpoint. It
-uses three matched stochastic generations per prompt, three independent local
-judge models, forward/reversed A/B judging, strict majority decisions, and
-prompt-level bootstrap intervals. Outputs resume safely in a new Drive folder;
-the original test results remain unchanged.
+Evaluation only—this notebook never trains or loads the lost DPO checkpoint. It
+reuses the 111 paired baseline and DPO responses already saved in Drive, then
+applies three independent local judges, forward/reversed A/B judging, strict
+majority decisions, and prompt-level bootstrap intervals. Outputs resume safely
+in a new Drive folder; the original test results remain unchanged.
 """
     ),
     markdown("## 1. GPU and evaluation code\n"),
@@ -67,63 +67,54 @@ drive.mount("/content/drive")
 
 RUN_NAME = "pilot-1500-e8058f88d1c9-9806f0c8-65559296-3bb7250-20260921T055400Z"
 DRIVE_RUN = Path("/content/drive/MyDrive/SDT_DPO_Pilot") / RUN_NAME
-PAIRS = DRIVE_RUN / "reproducibility/dpo_pairs_1500.jsonl"
-BASELINE_MODEL = "microsoft/Phi-4-mini-instruct"
-DPO_MODEL = DRIVE_RUN / "selected_lr1e6_b010_ep1/model"
+BASELINE_GENERATIONS = DRIVE_RUN / "test/baseline-generations.jsonl"
+DPO_GENERATIONS = DRIVE_RUN / "test/dpo-generations.jsonl"
+assert BASELINE_GENERATIONS.exists(), f"Missing saved baseline responses: {BASELINE_GENERATIONS}"
+assert DPO_GENERATIONS.exists(), f"Missing saved DPO responses: {DPO_GENERATIONS}"
 
-assert PAIRS.exists(), f"Missing saved pairs: {PAIRS}"
-assert (DPO_MODEL / "config.json").exists(), f"Missing DPO config: {DPO_MODEL}"
-weights = list(DPO_MODEL.glob("*.safetensors"))
-assert weights and sum(path.stat().st_size for path in weights) > 100 * 1024 * 1024, "DPO weights are missing."
-
-EVAL_ROOT = DRIVE_RUN / "test/enhanced-fresh-evaluation-v1"
+EVAL_ROOT = DRIVE_RUN / "test/enhanced-existing-generations-evaluation-v1"
 EVAL_ROOT.mkdir(parents=True, exist_ok=True)
-GENERATION_SEEDS = [101, 202, 303]
-TEMPERATURE = 0.7
-TOP_P = 0.9
+GENERATION_SEEDS = [42]
 JUDGE_MODELS = [
     "Qwen/Qwen2.5-7B-Instruct",
     "mistralai/Mistral-7B-Instruct-v0.3",
     "allenai/OLMo-2-1124-7B-Instruct",
 ]
-print({"run": RUN_NAME, "weights_gb": sum(p.stat().st_size for p in weights) / 1e9,
-       "seeds": GENERATION_SEEDS, "judges": JUDGE_MODELS})
+print({"run": RUN_NAME, "saved_generation_seed": GENERATION_SEEDS[0], "judges": JUDGE_MODELS})
 """
     ),
     markdown(
-        """## 3. Generate matched responses
+        """## 3. Verify the saved matched responses
 
-Each prompt receives a deterministic prompt-specific random seed. Baseline and
-DPO therefore use the same random seed for each matched comparison. Existing
-complete files are reused after a disconnect.
+These are the original fresh responses generated before the checkpoint was
+lost. This notebook does not need the model weights and does not regenerate or
+overwrite either file.
 """
     ),
     code(
-        """for seed in GENERATION_SEEDS:
-    seed_dir = EVAL_ROOT / "generations" / f"seed-{seed}"
-    seed_dir.mkdir(parents=True, exist_ok=True)
-    for name, model in [("baseline", BASELINE_MODEL), ("dpo", str(DPO_MODEL))]:
-        output = seed_dir / f"{name}.jsonl"
-        subprocess.run([
-            "sdt-generate-responses", "--pairs", str(PAIRS), "--model", model,
-            "--output", str(output), "--split", "test", "--max-input-length", "1536",
-            "--max-new-tokens", "512", "--temperature", str(TEMPERATURE),
-            "--top-p", str(TOP_P), "--seed", str(seed),
-        ], check=True)
-        print("Complete:", output)
+        """def read_generation_ids(path):
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    ids = [str(row["prompt_id"]) for row in rows]
+    assert len(ids) == len(set(ids)), f"Duplicate prompt IDs in {path}"
+    assert all(str(row.get("response", "")).strip() for row in rows), f"Empty response in {path}"
+    return rows, set(ids)
+
+baseline_rows, baseline_ids = read_generation_ids(BASELINE_GENERATIONS)
+dpo_rows, dpo_ids = read_generation_ids(DPO_GENERATIONS)
+assert baseline_ids == dpo_ids and baseline_ids, "Baseline/DPO prompt coverage differs."
+baseline_prompts = {str(row["prompt_id"]): str(row["prompt"]) for row in baseline_rows}
+dpo_prompts = {str(row["prompt_id"]): str(row["prompt"]) for row in dpo_rows}
+assert baseline_prompts == dpo_prompts, "Prompt text differs between saved generation files."
+print("Verified paired saved responses:", len(baseline_ids))
 """
     ),
-    markdown("## 4. Verify matched coverage\n"),
+    markdown("## 4. Inspect response overlap\n"),
     code(
-        """expected_ids = None
-for seed in GENERATION_SEEDS:
-    seed_dir = EVAL_ROOT / "generations" / f"seed-{seed}"
-    baseline = {json.loads(x)["prompt_id"] for x in (seed_dir / "baseline.jsonl").read_text().splitlines() if x.strip()}
-    dpo = {json.loads(x)["prompt_id"] for x in (seed_dir / "dpo.jsonl").read_text().splitlines() if x.strip()}
-    assert baseline == dpo and baseline
-    expected_ids = baseline if expected_ids is None else expected_ids
-    assert baseline == expected_ids, "Generation seeds covered different prompts."
-    print(f"Seed {seed}: {len(baseline)} matched prompts")
+        """baseline_by_id = {str(row["prompt_id"]): " ".join(str(row["response"]).split()) for row in baseline_rows}
+dpo_by_id = {str(row["prompt_id"]): " ".join(str(row["response"]).split()) for row in dpo_rows}
+identical = sum(baseline_by_id[prompt_id] == dpo_by_id[prompt_id] for prompt_id in baseline_ids)
+print({"prompts": len(baseline_ids), "identical_responses": identical,
+       "responses_requiring_judgment": len(baseline_ids) - identical})
 """
     ),
     markdown(
@@ -143,7 +134,6 @@ manifest_entries = []
 for judge_index, judge_model in enumerate(JUDGE_MODELS):
     slug = judge_slug(judge_index, judge_model)
     for generation_seed in GENERATION_SEEDS:
-        generation_dir = EVAL_ROOT / "generations" / f"seed-{generation_seed}"
         output_dir = EVAL_ROOT / "judgments" / slug / f"seed-{generation_seed}"
         output_dir.mkdir(parents=True, exist_ok=True)
         files = {}
@@ -153,8 +143,8 @@ for judge_index, judge_model in enumerate(JUDGE_MODELS):
             failures = output_dir / f"{orientation}-failures.jsonl"
             command = [
                 "sdt-judge-generations-local",
-                "--baseline", str(generation_dir / "baseline.jsonl"),
-                "--dpo", str(generation_dir / "dpo.jsonl"),
+                "--baseline", str(BASELINE_GENERATIONS),
+                "--dpo", str(DPO_GENERATIONS),
                 "--details", str(details), "--summary", str(summary),
                 "--failures", str(failures), "--judge-model", judge_model,
                 "--seed", "42", "--max-new-tokens", "512", "--max-retries", "3",
@@ -174,8 +164,7 @@ MANIFEST = EVAL_ROOT / "evaluation-manifest.json"
 MANIFEST.write_text(json.dumps({
     "generation_seeds": GENERATION_SEEDS,
     "judge_models": JUDGE_MODELS,
-    "temperature": TEMPERATURE,
-    "top_p": TOP_P,
+    "source": "saved_original_fresh_generations",
     "position_reversal": True,
     "judgments": manifest_entries,
 }, indent=2) + "\\n")
@@ -231,11 +220,8 @@ display(pd.DataFrame([
     ),
     markdown("## 8. Final artifact audit\n"),
     code(
-        """required = [MANIFEST, FINAL_SUMMARY, PROMPT_DETAILS]
-required += [
-    EVAL_ROOT / "generations" / f"seed-{seed}" / f"{name}.jsonl"
-    for seed in GENERATION_SEEDS for name in ("baseline", "dpo")
-]
+        """required = [BASELINE_GENERATIONS, DPO_GENERATIONS, MANIFEST, FINAL_SUMMARY, PROMPT_DETAILS]
+required += [Path(entry[key]) for entry in manifest_entries for key in ("forward", "reverse")]
 for path in required:
     assert path.exists() and path.stat().st_size > 0, f"Missing: {path}"
 print(f"Enhanced evaluation complete: {len(required)} core artifacts verified")
