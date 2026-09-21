@@ -108,13 +108,50 @@ def _extract_json(text: str) -> dict[str, Any]:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start < 0 or end < start:
+    if start < 0:
         raise ValueError("judge_response_contains_no_json_object")
-    value = json.loads(stripped[start : end + 1])
+    candidate = stripped[start:]
+    decoder = json.JSONDecoder()
+    try:
+        value, _ = decoder.raw_decode(candidate)
+    except json.JSONDecodeError as original_error:
+        repaired = _close_truncated_json(candidate)
+        if repaired == candidate:
+            raise original_error
+        value, _ = decoder.raw_decode(repaired)
     if not isinstance(value, dict):
         raise ValueError("judge_response_is_not_an_object")
     return value
+
+
+def _close_truncated_json(text: str) -> str:
+    """Append only missing trailing object/array closers to otherwise complete JSON."""
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+        elif character in "}]":
+            if not stack or stack[-1] != pairs[character]:
+                return text
+            stack.pop()
+    if in_string or escaped or not stack:
+        return text
+    closers = {"{": "}", "[": "]"}
+    return text + "".join(closers[opener] for opener in reversed(stack))
 
 
 def _validate_judgment(value: dict[str, Any]) -> dict[str, Any]:

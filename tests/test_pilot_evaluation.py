@@ -72,6 +72,22 @@ class PilotEvaluationTests(unittest.TestCase):
         self.assertEqual(report["api_judged_n"], 2)
         self.assertEqual(report["mean_dimension_delta_dpo_minus_baseline"]["autonomy"], 0.5)
 
+    def test_judge_json_repairs_only_missing_trailing_closer(self) -> None:
+        scores = {dimension: 4 for dimension in DIMENSIONS}
+        truncated = json.dumps(
+            {
+                "winner": "tie",
+                "scores": {"A": scores, "B": scores},
+                "reason": "Equivalent answers.",
+            }
+        )[:-1]
+        parsed = _extract_json(truncated)
+        self.assertEqual(parsed["winner"], "tie")
+        self.assertEqual(parsed["reason"], "Equivalent answers.")
+
+        with self.assertRaises(json.JSONDecodeError):
+            _extract_json('{"winner":"tie","reason":"unterminated}')
+
     def test_deterministic_identical_ties_do_not_fabricate_dimension_scores(self) -> None:
         rows = [
             {
