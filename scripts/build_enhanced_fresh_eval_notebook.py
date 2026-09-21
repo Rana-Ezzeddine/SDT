@@ -148,6 +148,7 @@ for judge_index, judge_model in enumerate(JUDGE_MODELS):
                 "--details", str(details), "--summary", str(summary),
                 "--failures", str(failures), "--judge-model", judge_model,
                 "--seed", "42", "--max-new-tokens", "512", "--max-retries", "3",
+                "--continue-on-failure",
             ]
             if reverse:
                 command.append("--reverse-order")

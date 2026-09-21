@@ -134,6 +134,14 @@ def parse_args() -> argparse.Namespace:
         help="Invert the deterministic A/B assignment to measure position consistency.",
     )
     parser.add_argument(
+        "--continue-on-failure",
+        action="store_true",
+        help=(
+            "Record an unavailable judge vote after all retries and continue. "
+            "Use only in a multi-judge panel whose aggregator handles missing votes."
+        ),
+    )
+    parser.add_argument(
         "--failures", type=Path, help="Optional JSONL log of failed parsing attempts."
     )
     return parser.parse_args()
@@ -266,12 +274,29 @@ def main() -> None:
                             failure_handle.write(
                                 json.dumps(failure, ensure_ascii=False) + "\n"
                             )
-                    if attempt == args.max_retries:
+                    if attempt == args.max_retries and not args.continue_on_failure:
                         raise RuntimeError(
                             f"Local judge failed for prompt {prompt_id} after "
                             f"{args.max_retries} attempts"
                         ) from error
-            assert judged is not None
+            if judged is None:
+                row = {
+                    "prompt_id": prompt_id,
+                    "prompt": before["prompt"],
+                    "winner": "failed",
+                    "reason": previous_error,
+                    "judgment_type": "failed_judgment",
+                    "judge_model": args.judge_model,
+                    "judge_config_fingerprint": config_fingerprint,
+                    "prompt_version": JUDGE_PROMPT_VERSION,
+                    "reverse_order": args.reverse_order,
+                    "raw_judge_response": raw,
+                }
+                completed[prompt_id] = row
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.flush()
+                print(f"Recorded unavailable vote {index}/{len(baseline)} prompts")
+                continue
             winner = (
                 "tie"
                 if judged["winner"] == "tie"
@@ -299,7 +324,13 @@ def main() -> None:
             handle.flush()
             print(f"Judged {index}/{len(baseline)} prompts")
 
-    report = summarize([completed[prompt_id] for prompt_id in sorted(completed)])
+    all_rows = [completed[prompt_id] for prompt_id in sorted(completed)]
+    valid_rows = [row for row in all_rows if row["winner"] in {"dpo", "baseline", "tie"}]
+    if not valid_rows:
+        raise ValueError("The local judge produced no valid judgments")
+    report = summarize(valid_rows)
+    report["attempted_n"] = len(all_rows)
+    report["failed_judgments"] = len(all_rows) - len(valid_rows)
     report["locally_judged_n"] = report.pop("api_judged_n")
     report["judge_backend"] = "local_transformers"
     report["judge_model"] = args.judge_model

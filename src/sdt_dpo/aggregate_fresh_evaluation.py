@@ -75,12 +75,19 @@ def aggregate(manifest_path: Path, *, bootstrap_samples: int = 10000) -> tuple[d
             if prompt_text[prompt_id] != prompt:
                 raise ValueError(f"Prompt changed across judgments for {prompt_id}")
 
+            valid_winners = {"dpo", "baseline", "tie"}
+            failed_position_pair = (
+                first["winner"] not in valid_winners
+                or second["winner"] not in valid_winners
+            )
             deterministic_tie = (
                 first.get("judgment_type") == "deterministic_identical_response"
                 and second.get("judgment_type") == "deterministic_identical_response"
             )
-            consistent = first["winner"] == second["winner"]
-            if deterministic_tie:
+            consistent = not failed_position_pair and first["winner"] == second["winner"]
+            if failed_position_pair:
+                judge_stats[judge_model]["failed_position_pairs"] += 1
+            elif deterministic_tie:
                 judge_stats[judge_model]["deterministic_identical"] += 1
             else:
                 judge_stats[judge_model]["position_checks"] += 1
@@ -99,7 +106,13 @@ def aggregate(manifest_path: Path, *, bootstrap_samples: int = 10000) -> tuple[d
                     )
                     for dimension in DIMENSIONS
                 }
-            vote = first["winner"] if consistent else "inconsistent"
+            vote = (
+                "failed"
+                if failed_position_pair
+                else first["winner"]
+                if consistent
+                else "inconsistent"
+            )
             judge_stats[judge_model][vote] += 1
             votes[(generation_seed, prompt_id)].append(
                 {
@@ -206,7 +219,7 @@ def aggregate(manifest_path: Path, *, bootstrap_samples: int = 10000) -> tuple[d
         "dimension_deltas": dimension_summary,
         "decision_rule": (
             "Strict judge majority per seed, then strict generation-seed majority per prompt; "
-            "position-inconsistent judge votes cannot contribute to a win."
+            "failed or position-inconsistent judge votes cannot contribute to a win."
         ),
     }
     return report, prompt_rows

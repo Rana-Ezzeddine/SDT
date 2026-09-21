@@ -198,6 +198,58 @@ class PilotEvaluationTests(unittest.TestCase):
             )
         )
 
+    def test_enhanced_evaluation_tolerates_one_failed_judge_vote(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entries = []
+            scores = {dimension: 4 for dimension in DIMENSIONS}
+            lower = {dimension: 3 for dimension in DIMENSIONS}
+            for judge in ("j1", "j2", "j3"):
+                paths = {}
+                for orientation in ("forward", "reverse"):
+                    path = root / f"{judge}-{orientation}.jsonl"
+                    if judge == "j3":
+                        row = {
+                            "prompt_id": "p1",
+                            "prompt": "one",
+                            "winner": "failed",
+                            "judgment_type": "failed_judgment",
+                        }
+                    else:
+                        row = {
+                            "prompt_id": "p1",
+                            "prompt": "one",
+                            "winner": "dpo",
+                            "judgment_type": "local_llm_judge",
+                            "dpo_scores": scores,
+                            "baseline_scores": lower,
+                        }
+                    path.write_text(json.dumps(row) + "\n")
+                    paths[orientation] = str(path)
+                entries.append(
+                    {
+                        "generation_seed": 42,
+                        "judge_model": judge,
+                        **paths,
+                    }
+                )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "generation_seeds": [42],
+                        "judge_models": ["j1", "j2", "j3"],
+                        "judgments": entries,
+                    }
+                )
+            )
+            report, details = aggregate(manifest_path, bootstrap_samples=100)
+
+        self.assertEqual(report["prompt_level_dpo_wins"], 1)
+        self.assertEqual(report["prompt_level_ties"], 0)
+        self.assertEqual(report["judge_diagnostics"]["j3"]["failed_position_pairs"], 1)
+        self.assertEqual(details[0]["winner"], "dpo")
+
 
 if __name__ == "__main__":
     unittest.main()
