@@ -25,6 +25,7 @@ sdt-compare-evaluations = "sdt_dpo.compare:main"
 sdt-verify-checkpoint = "sdt_dpo.verify_checkpoint:main"
 sdt-generate-responses = "sdt_dpo.generate:main"
 sdt-judge-generations = "sdt_dpo.judge_generations:main"
+sdt-judge-generations-local = "sdt_dpo.judge_generations_local:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

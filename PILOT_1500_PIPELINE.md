@@ -101,8 +101,8 @@ length are recorded in the training manifest.
 8. Generate one fresh baseline response and one fresh DPO response for every
    eligible test prompt with identical decoding settings.
 9. Record whitespace-identical generations as deterministic ties. Randomize A/B
-   order for the remaining responses and use an independent OpenAI-compatible
-   judge endpoint to report wins, ties, and seven SDT dimension deltas.
+   order for the remaining responses and use an independent local Hugging Face
+   judge to report wins, ties, and seven SDT dimension deltas.
 10. Create a unique run ID from the data, model, configuration, Git commit, and
     timestamp. Copy the raw input, processed pairs, pair audit, resolved config,
     dependency snapshot, final selected checkpoint, and evaluation artifacts to
@@ -121,12 +121,13 @@ judge outputs are written directly to Drive. Keep
 `RUN_LOCKED_TEST = False` until the configuration is frozen, then change it to
 `True` and run the locked-test sections once.
 
-For generated-response judging, add `JUDGE_API_KEY` as a Colab secret and set an
-independent judge model and OpenAI-compatible chat-completions endpoint in the
-final cell. The judge is optional for pipeline debugging but required for the
-planned behavioral comparison. The judge cache is bound to the input hashes,
-model, endpoint, prompt version, and A/B seed so incompatible runs cannot be
-silently mixed.
+For generated-response judging, the notebook uses
+`Qwen/Qwen2.5-7B-Instruct` locally through Transformers. It requires no API key
+and has no per-request API charge, although it consumes Colab GPU compute units
+and downloads the model weights. The judge is optional for pipeline debugging
+but required for the planned behavioral comparison. The judge cache is bound
+to the input hashes, model, decoding limit, prompt version, and A/B seed so
+incompatible runs cannot be silently mixed.
 
 The Drive run is complete only when `backup-verification.json` lists the final
 weight files and the `reproducibility/` directory contains the raw data, pairs,

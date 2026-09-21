@@ -14,6 +14,7 @@ from sdt_dpo.judge_generations import (
     _validate_judgment,
     summarize,
 )
+from sdt_dpo.judge_generations_local import _local_judge_config_fingerprint
 
 
 class PilotEvaluationTests(unittest.TestCase):
@@ -91,6 +92,29 @@ class PilotEvaluationTests(unittest.TestCase):
         self.assertEqual(
             report["mean_dimension_delta_dpo_minus_baseline"]["autonomy"], 1.0
         )
+
+    def test_local_judge_fingerprint_covers_inputs_and_decoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / "baseline.jsonl"
+            dpo = Path(directory) / "dpo.jsonl"
+            baseline.write_text('{"prompt_id":"p","response":"a"}\n')
+            dpo.write_text('{"prompt_id":"p","response":"b"}\n')
+            first, manifest = _local_judge_config_fingerprint(
+                baseline_path=baseline,
+                dpo_path=dpo,
+                judge_model="judge",
+                seed=42,
+                max_new_tokens=512,
+            )
+            second, _ = _local_judge_config_fingerprint(
+                baseline_path=baseline,
+                dpo_path=dpo,
+                judge_model="judge",
+                seed=42,
+                max_new_tokens=256,
+            )
+        self.assertNotEqual(first, second)
+        self.assertEqual(manifest["backend"], "local_transformers")
 
 
 if __name__ == "__main__":

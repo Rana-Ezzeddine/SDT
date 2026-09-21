@@ -321,37 +321,32 @@ else:
 """
     ),
     markdown(
-        """## 9. Optional blinded LLM-as-a-judge
+        """## 9. Optional free local LLM-as-a-judge
 
-Use an independent judge. Add `JUDGE_API_KEY` to Colab secrets. Identical
-responses are recorded deterministically as ties and do not consume API calls.
-Each completed judgment is written directly to Drive, so the cell can resume
-after a disconnect when its model, endpoint, seed, prompt version, and inputs
-are unchanged.
+Run an independent Qwen judge locally on the Colab GPU, with no API key or
+per-request API charge. Identical responses are recorded deterministically as
+ties. Each completed judgment is written directly to Drive, so the cell can
+resume after a disconnect when its model, settings, prompt version, and inputs
+are unchanged. This still uses Colab GPU compute units.
 """
     ),
     code(
-        """RUN_LLM_JUDGE = False
-JUDGE_MODEL = ""
-JUDGE_API_URL = "https://api.openai.com/v1/chat/completions"
+        """RUN_LOCAL_LLM_JUDGE = False
+LOCAL_JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
-if RUN_LLM_JUDGE:
-    from google.colab import userdata
-    assert RUN_LOCKED_TEST and JUDGE_MODEL, "Generate the locked-test answers and set JUDGE_MODEL."
-    api_key = userdata.get("JUDGE_API_KEY")
-    assert api_key, "Add JUDGE_API_KEY to Colab secrets and enable notebook access."
-    os.environ["JUDGE_API_KEY"] = api_key
+if RUN_LOCAL_LLM_JUDGE:
+    assert RUN_LOCKED_TEST and LOCAL_JUDGE_MODEL, "Generate the locked-test answers and choose a local judge."
     drive_test = DRIVE_RUN / "test"
     details = drive_test / "generation-judgments.jsonl"
     summary = drive_test / "generation-judge-summary.json"
     failures = drive_test / "generation-judge-failures.jsonl"
-    subprocess.run(["sdt-judge-generations",
+    subprocess.run(["sdt-judge-generations-local",
                     "--baseline", str(drive_test / "baseline-generations.jsonl"),
                     "--dpo", str(drive_test / "dpo-generations.jsonl"),
                     "--details", str(details), "--summary", str(summary),
-                    "--failures", str(failures), "--judge-model", JUDGE_MODEL,
-                    "--api-url", JUDGE_API_URL, "--seed", "42",
-                    "--max-retries", "3", "--retry-backoff", "2"], check=True)
+                    "--failures", str(failures), "--judge-model", LOCAL_JUDGE_MODEL,
+                    "--seed", "42", "--max-new-tokens", "512",
+                    "--max-retries", "3"], check=True)
     print(summary.read_text())
     TEST_DIR.mkdir(parents=True, exist_ok=True)
     for source in [details, summary, failures]:
@@ -359,7 +354,7 @@ if RUN_LLM_JUDGE:
             shutil.copy2(source, TEST_DIR / source.name)
     DRIVE_RUN = sync_run_to_drive("llm_judge_complete", require_model=True)
 else:
-    print("LLM judge disabled. Set RUN_LLM_JUDGE=True only after choosing an independent judge.")
+    print("Local LLM judge disabled. Set RUN_LOCAL_LLM_JUDGE=True when ready.")
 """
     ),
     markdown("## 10. Final Drive audit\n"),
