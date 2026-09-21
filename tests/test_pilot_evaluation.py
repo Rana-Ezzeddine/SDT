@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from sdt_dpo.generate import load_prompts
+from sdt_dpo.aggregate_fresh_evaluation import aggregate
 from sdt_dpo.judge_generations import (
     DIMENSIONS,
     _dpo_is_a,
@@ -105,6 +106,7 @@ class PilotEvaluationTests(unittest.TestCase):
                 judge_model="judge",
                 seed=42,
                 max_new_tokens=512,
+                reverse_order=False,
             )
             second, _ = _local_judge_config_fingerprint(
                 baseline_path=baseline,
@@ -112,9 +114,73 @@ class PilotEvaluationTests(unittest.TestCase):
                 judge_model="judge",
                 seed=42,
                 max_new_tokens=256,
+                reverse_order=False,
             )
         self.assertNotEqual(first, second)
         self.assertEqual(manifest["backend"], "local_transformers")
+
+    def test_enhanced_evaluation_aggregates_at_prompt_level(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entries = []
+            judges = ["j1", "j2", "j3"]
+            seeds = [101, 202, 303]
+            scores = {dimension: 4 for dimension in DIMENSIONS}
+            lower = {dimension: 3 for dimension in DIMENSIONS}
+            for seed in seeds:
+                for judge in judges:
+                    paths = {}
+                    for orientation in ("forward", "reverse"):
+                        path = root / f"{seed}-{judge}-{orientation}.jsonl"
+                        rows = [
+                            {
+                                "prompt_id": "p1",
+                                "prompt": "one",
+                                "winner": "dpo",
+                                "judgment_type": "local_llm_judge",
+                                "dpo_scores": scores,
+                                "baseline_scores": lower,
+                            },
+                            {
+                                "prompt_id": "p2",
+                                "prompt": "two",
+                                "winner": "baseline",
+                                "judgment_type": "local_llm_judge",
+                                "dpo_scores": lower,
+                                "baseline_scores": scores,
+                            },
+                        ]
+                        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+                        paths[orientation] = str(path)
+                    entries.append(
+                        {
+                            "generation_seed": seed,
+                            "judge_model": judge,
+                            **paths,
+                        }
+                    )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "generation_seeds": seeds,
+                        "judge_models": judges,
+                        "judgments": entries,
+                    }
+                )
+            )
+            report, details = aggregate(manifest_path, bootstrap_samples=200)
+        self.assertEqual(report["n_prompts"], 2)
+        self.assertEqual(report["prompt_level_dpo_wins"], 1)
+        self.assertEqual(report["prompt_level_baseline_wins"], 1)
+        self.assertEqual(report["prompt_macro_tie_adjusted_dpo_score"], 0.5)
+        self.assertEqual(len(details), 2)
+        self.assertTrue(
+            all(
+                value["position_consistency_rate"] == 1.0
+                for value in report["judge_diagnostics"].values()
+            )
+        )
 
 
 if __name__ == "__main__":

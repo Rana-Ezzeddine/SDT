@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from jinja2.exceptions import TemplateError
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .judge_generations import (
@@ -31,6 +32,7 @@ def _local_judge_config_fingerprint(
     judge_model: str,
     seed: int,
     max_new_tokens: int,
+    reverse_order: bool,
 ) -> tuple[str, dict[str, Any]]:
     manifest = {
         "backend": "local_transformers",
@@ -41,6 +43,7 @@ def _local_judge_config_fingerprint(
         "order_randomization_seed": seed,
         "max_new_tokens": max_new_tokens,
         "do_sample": False,
+        "reverse_order": reverse_order,
     }
     encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), manifest
@@ -76,16 +79,39 @@ def _generate_judgment(
                 },
             ]
         )
-    rendered = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+    try:
+        rendered = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    except (ValueError, TypeError, TemplateError):
+        # Some instruct templates (notably older Mistral templates) do not
+        # accept a separate system role. Preserve the instruction by folding it
+        # into the first user message instead of dropping it.
+        fallback = [
+            {
+                "role": "user",
+                "content": (
+                    "You are a careful, impartial evaluator. Return valid JSON only.\n\n"
+                    + prompt
+                ),
+            }
+        ]
+        if previous_response:
+            fallback.extend(messages[2:])
+        rendered = tokenizer.apply_chat_template(
+            fallback, tokenize=False, add_generation_prompt=True
+        )
     inputs = tokenizer(rendered, return_tensors="pt").to(model.device)
     with torch.inference_mode():
         generated = model.generate(
             **inputs,
             do_sample=False,
             max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            pad_token_id=(
+                tokenizer.pad_token_id
+                if tokenizer.pad_token_id is not None
+                else tokenizer.eos_token_id
+            ),
             eos_token_id=tokenizer.eos_token_id,
         )
     completion = generated[0, inputs["input_ids"].shape[1] :]
@@ -102,6 +128,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument(
+        "--reverse-order",
+        action="store_true",
+        help="Invert the deterministic A/B assignment to measure position consistency.",
+    )
     parser.add_argument(
         "--failures", type=Path, help="Optional JSONL log of failed parsing attempts."
     )
@@ -128,6 +159,7 @@ def main() -> None:
         judge_model=args.judge_model,
         seed=args.seed,
         max_new_tokens=args.max_new_tokens,
+        reverse_order=args.reverse_order,
     )
 
     completed: dict[str, dict[str, Any]] = {}
@@ -190,6 +222,7 @@ def main() -> None:
                     "judge_model": None,
                     "judge_config_fingerprint": config_fingerprint,
                     "prompt_version": JUDGE_PROMPT_VERSION,
+                    "reverse_order": args.reverse_order,
                 }
                 completed[prompt_id] = row
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -198,7 +231,7 @@ def main() -> None:
                 continue
 
             assert model is not None and tokenizer is not None
-            dpo_is_a = _dpo_is_a(prompt_id, args.seed)
+            dpo_is_a = _dpo_is_a(prompt_id, args.seed) ^ args.reverse_order
             response_a = after["response"] if dpo_is_a else before["response"]
             response_b = before["response"] if dpo_is_a else after["response"]
             judge_prompt = _judge_prompt(str(before["prompt"]), response_a, response_b)
@@ -258,6 +291,7 @@ def main() -> None:
                 "judge_model": args.judge_model,
                 "judge_config_fingerprint": config_fingerprint,
                 "prompt_version": JUDGE_PROMPT_VERSION,
+                "reverse_order": args.reverse_order,
                 "raw_judge_response": raw,
             }
             completed[prompt_id] = row
@@ -270,6 +304,7 @@ def main() -> None:
     report["judge_backend"] = "local_transformers"
     report["judge_model"] = args.judge_model
     report["order_randomization_seed"] = args.seed
+    report["reverse_order"] = args.reverse_order
     report["judge_config_fingerprint"] = config_fingerprint
     report["judge_manifest"] = judge_manifest
     args.summary.parent.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-input-length", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -56,6 +58,8 @@ def main() -> None:
     args = parse_args()
     if args.temperature < 0:
         raise ValueError("temperature must be nonnegative")
+    if not 0 < args.top_p <= 1:
+        raise ValueError("top_p must be in (0, 1]")
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, __version__
@@ -69,6 +73,7 @@ def main() -> None:
     expected_generation = {
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
+        "top_p": args.top_p,
         "seed": args.seed,
     }
     completed: dict[str, dict[str, Any]] = {}
@@ -85,7 +90,10 @@ def main() -> None:
                     )
                 recorded = row.get("generation", {})
                 for key, value in expected_generation.items():
-                    if recorded.get(key) != value:
+                    recorded_value = (
+                        recorded.get(key, 1.0) if key == "top_p" else recorded.get(key)
+                    )
+                    if recorded_value != value:
                         raise ValueError(
                             "Existing generation output used different decoding settings; "
                             "use a new output file"
@@ -139,6 +147,15 @@ def main() -> None:
                     f"max_input_length={args.max_input_length}"
                 )
             encoded = {key: value.to(device) for key, value in encoded.items()}
+            prompt_seed = int.from_bytes(
+                hashlib.sha256(
+                    f"{args.seed}::{item['prompt_id']}".encode("utf-8")
+                ).digest()[:8],
+                "big",
+            ) % (2**31)
+            torch.manual_seed(prompt_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(prompt_seed)
             generation_kwargs: dict[str, Any] = {
                 "max_new_tokens": args.max_new_tokens,
                 "do_sample": args.temperature > 0,
@@ -146,6 +163,7 @@ def main() -> None:
             }
             if args.temperature > 0:
                 generation_kwargs["temperature"] = args.temperature
+                generation_kwargs["top_p"] = args.top_p
             with torch.inference_mode():
                 generated = model.generate(**encoded, **generation_kwargs)
             completion_ids = generated[0, input_length:]
@@ -159,7 +177,9 @@ def main() -> None:
                 "generation": {
                     "max_new_tokens": args.max_new_tokens,
                     "temperature": args.temperature,
+                    "top_p": args.top_p,
                     "seed": args.seed,
+                    "prompt_seed": prompt_seed,
                     "precision": precision,
                 },
             }
