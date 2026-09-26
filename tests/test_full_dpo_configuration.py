@@ -117,6 +117,41 @@ class FullDPOConfigurationTests(unittest.TestCase):
             all(not cell.get("outputs") for cell in notebook["cells"] if cell["cell_type"] == "code")
         )
 
+    def test_v2_notebooks_preserve_model_and_separate_evaluation(self) -> None:
+        training_path = ROOT / "notebooks/SDT_1500_DPO_Pilot_V2_Training_Colab.ipynb"
+        evaluation_path = ROOT / "notebooks/SDT_1500_DPO_Pilot_V2_Evaluation_Colab.ipynb"
+        for path in (training_path, evaluation_path):
+            notebook = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(notebook["nbformat"], 4)
+            self.assertTrue(
+                all(
+                    not cell.get("outputs")
+                    for cell in notebook["cells"]
+                    if cell["cell_type"] == "code"
+                )
+            )
+
+        training_source = training_path.read_text(encoding="utf-8")
+        self.assertIn("SDT_DPO_Pilot_V2", training_source)
+        self.assertIn("RESUME_RUN_NAME", training_source)
+        self.assertIn("model-integrity.json", training_source)
+        self.assertIn("local_files_only=True", training_source)
+        self.assertIn("artifact-manifest.json", training_source)
+        self.assertIn("GENERATION_SEEDS = [42, 202, 303]", training_source)
+
+        evaluation_source = evaluation_path.read_text(encoding="utf-8")
+        self.assertNotIn("sdt-train-dpo", evaluation_source)
+        self.assertIn("Qwen/Qwen2.5-14B-Instruct", evaluation_source)
+        self.assertIn("--reverse-order", evaluation_source)
+        self.assertIn("--continue-on-failure", evaluation_source)
+        self.assertIn("evaluation-artifact-manifest.json", evaluation_source)
+
+    def test_trainer_can_resume_and_logs_history(self) -> None:
+        trainer = (ROOT / "src/sdt_dpo/train.py").read_text(encoding="utf-8")
+        self.assertIn('config.get("resume_from_checkpoint", False)', trainer)
+        self.assertIn("get_last_checkpoint", trainer)
+        self.assertIn("trainer_log_history.json", trainer)
+
 
 if __name__ == "__main__":
     unittest.main()

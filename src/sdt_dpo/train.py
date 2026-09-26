@@ -95,6 +95,7 @@ def main() -> None:
     import torch
     from datasets import Dataset, load_dataset
     from transformers import AutoTokenizer, __version__ as transformers_version, set_seed
+    from transformers.trainer_utils import get_last_checkpoint
     from trl import DPOConfig, DPOTrainer
 
     seed = int(config.get("seed", 42))
@@ -281,7 +282,20 @@ def main() -> None:
         )
     print(f"Full DPO trainable parameters: {trainable_parameters:,}/{total_parameters:,}")
 
-    train_result = trainer.train()
+    resume_setting = config.get("resume_from_checkpoint", False)
+    resume_checkpoint: str | bool | None
+    if resume_setting == "auto":
+        resume_checkpoint = get_last_checkpoint(str(output_dir))
+        if resume_checkpoint:
+            print(f"Resuming from checkpoint: {resume_checkpoint}")
+        else:
+            print("No complete checkpoint found; starting training from the base model")
+    elif isinstance(resume_setting, str) and resume_setting:
+        resume_checkpoint = str(_repo_path(config_path, resume_setting))
+    else:
+        resume_checkpoint = bool(resume_setting)
+
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
     # Reuse the initialized eval dataset because its reference log-probabilities were
     # cached before training. Passing validation_dpo here would be a new uncached dataset
     # after the reference model has already been released.
@@ -297,6 +311,10 @@ def main() -> None:
         json.dumps(validation_metrics, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
+    (output_dir / "trainer_log_history.json").write_text(
+        json.dumps(trainer.state.log_history, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
     (output_dir / "resolved_config.json").write_text(
         json.dumps(config, indent=2, default=str) + "\n",
         encoding="utf-8",
@@ -310,6 +328,7 @@ def main() -> None:
         "effective_warmup_steps": warmup_steps,
         "best_model_checkpoint": trainer.state.best_model_checkpoint,
         "best_validation_metric": trainer.state.best_metric,
+        "resumed_from_checkpoint": resume_checkpoint,
         "trainable_parameters": trainable_parameters,
         "total_parameters": total_parameters,
         "precision": precision_name,
