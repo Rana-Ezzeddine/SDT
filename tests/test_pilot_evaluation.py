@@ -9,8 +9,10 @@ from sdt_dpo.generate import load_prompts
 from sdt_dpo.aggregate_fresh_evaluation import aggregate
 from sdt_dpo.judge_generations import (
     DIMENSIONS,
+    JUDGE_PROMPT_VERSION,
     _dpo_is_a,
     _extract_json,
+    _judge_prompt,
     _normalized_response,
     _validate_judgment,
     summarize,
@@ -19,6 +21,14 @@ from sdt_dpo.judge_generations_local import _local_judge_config_fingerprint
 
 
 class PilotEvaluationTests(unittest.TestCase):
+    def test_v4_judge_prompt_is_explicit_and_parser_compatible(self) -> None:
+        prompt = _judge_prompt("Do the task", "Answer A", "Answer B")
+        self.assertEqual(JUDGE_PROMPT_VERSION, "sdt-blind-pairwise-v4")
+        self.assertIn("Score each response independently", prompt)
+        self.assertIn("assign both responses 3", prompt)
+        self.assertIn("Do not choose tie merely because both are acceptable", prompt)
+        self.assertIn('\"winner\":\"A|B|tie\"', prompt)
+
     def test_generation_uses_each_retained_prompt_once(self) -> None:
         rows = [
             {"prompt_id": "p1", "prompt": "one", "split": "test", "retain": True, "label_margin": 0.5},

@@ -386,9 +386,9 @@ evaluation_cells = [
         """# SDT DPO pilot V2 — multi-sample fresh-response evaluation
 
 This notebook never trains. It evaluates the three saved matched generation
-samples from the V2 run with three stronger local judges. Every pair is judged
-blindly in both A/B orders. Failed and order-inconsistent votes cannot create a
-win. Final aggregation is first across judges for each generation seed, then
+samples from the V2 run with a local pilot judge. Every pair is judged blindly
+in both A/B orders. Failed and order-inconsistent votes cannot create a win.
+Final aggregation is first across judge votes for each generation seed, then
 across generation seeds for each unique prompt.
 """
     ),
@@ -475,19 +475,16 @@ for seed in GENERATION_SEEDS:
     markdown(
         """## 4. Blind stronger-judge panel with position reversal
 
-The models run sequentially, so only one judge occupies GPU memory at a time.
-Outputs are written directly to Drive and resume row-by-row. On an A100 40/80 GB,
-the default 12–14B judges should fit in bfloat16. If a model is unavailable, use a
-comparably capable ungated instruct model and start a new evaluation version.
+The model writes outputs directly to Drive and resumes row-by-row. The default
+3B judge fits on a T4 and provides a provisional pilot result. A final claim should
+use a stronger multi-judge panel and its own evaluation version.
 """
     ),
     code(
         """JUDGE_MODELS = [
-    "Qwen/Qwen2.5-14B-Instruct",
-    "mistralai/Mistral-Nemo-Instruct-2407",
-    "allenai/OLMo-2-1124-13B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
 ]
-EVAL_ROOT = DRIVE_RUN / "test" / "fresh-evaluation-v2"
+EVAL_ROOT = DRIVE_RUN / "test" / "fresh-evaluation-v4-qwen3b"
 EVAL_ROOT.mkdir(parents=True, exist_ok=True)
 
 def judge_slug(index, model):
@@ -512,7 +509,7 @@ for model_name in ("baseline", "dpo"):
                 handle.write(json.dumps(row, ensure_ascii=False) + "\\n")
     combined_files[model_name] = combined
 
-# Combining the three generation seeds lets each 12–14B judge load only twice
+# Combining the three generation seeds lets the judge load only twice
 # (forward and reverse), rather than six times. Split files below restore the
 # original prompt IDs for seed-aware aggregation.
 manifest_entries = []

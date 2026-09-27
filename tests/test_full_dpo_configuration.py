@@ -141,7 +141,8 @@ class FullDPOConfigurationTests(unittest.TestCase):
 
         evaluation_source = evaluation_path.read_text(encoding="utf-8")
         self.assertNotIn("sdt-train-dpo", evaluation_source)
-        self.assertIn("Qwen/Qwen2.5-14B-Instruct", evaluation_source)
+        self.assertIn("Qwen/Qwen2.5-3B-Instruct", evaluation_source)
+        self.assertIn("fresh-evaluation-v4-qwen3b", evaluation_source)
         self.assertIn("--reverse-order", evaluation_source)
         self.assertIn("--continue-on-failure", evaluation_source)
         self.assertIn("evaluation-artifact-manifest.json", evaluation_source)

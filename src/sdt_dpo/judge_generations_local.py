@@ -14,6 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .judge_generations import (
     JUDGE_PROMPT_VERSION,
+    JUDGE_SYSTEM_PROMPT,
     _dpo_is_a,
     _extract_json,
     _judge_prompt,
@@ -61,7 +62,7 @@ def _generate_judgment(
     messages = [
         {
             "role": "system",
-            "content": "You are a careful, impartial evaluator. Return valid JSON only.",
+            "content": JUDGE_SYSTEM_PROMPT,
         },
         {"role": "user", "content": prompt},
     ]
@@ -91,8 +92,7 @@ def _generate_judgment(
             {
                 "role": "user",
                 "content": (
-                    "You are a careful, impartial evaluator. Return valid JSON only.\n\n"
-                    + prompt
+                    JUDGE_SYSTEM_PROMPT + "\n\n" + prompt
                 ),
             }
         ]
