@@ -16,6 +16,7 @@ from sdt_dpo.judge_generations import (
     _normalized_response,
     _validate_judgment,
     summarize,
+    _judge_config_fingerprint,
 )
 from sdt_dpo.judge_generations_local import _local_judge_config_fingerprint
 
@@ -144,6 +145,31 @@ class PilotEvaluationTests(unittest.TestCase):
             )
         self.assertNotEqual(first, second)
         self.assertEqual(manifest["backend"], "local_transformers")
+
+    def test_api_judge_fingerprint_covers_position_reversal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / "baseline.jsonl"
+            dpo = Path(directory) / "dpo.jsonl"
+            baseline.write_text('{"prompt_id":"p","response":"a"}\n')
+            dpo.write_text('{"prompt_id":"p","response":"b"}\n')
+            forward, manifest = _judge_config_fingerprint(
+                baseline_path=baseline,
+                dpo_path=dpo,
+                judge_model="judge",
+                api_url="https://example.test/chat/completions",
+                seed=42,
+                reverse_order=False,
+            )
+            reverse, _ = _judge_config_fingerprint(
+                baseline_path=baseline,
+                dpo_path=dpo,
+                judge_model="judge",
+                api_url="https://example.test/chat/completions",
+                seed=42,
+                reverse_order=True,
+            )
+        self.assertNotEqual(forward, reverse)
+        self.assertFalse(manifest["reverse_order"])
 
     def test_enhanced_evaluation_aggregates_at_prompt_level(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

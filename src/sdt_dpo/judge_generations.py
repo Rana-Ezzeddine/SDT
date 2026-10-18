@@ -53,6 +53,7 @@ def _judge_config_fingerprint(
     judge_model: str,
     api_url: str,
     seed: int,
+    reverse_order: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     manifest = {
         "prompt_version": JUDGE_PROMPT_VERSION,
@@ -61,6 +62,7 @@ def _judge_config_fingerprint(
         "judge_model": judge_model,
         "api_url": api_url,
         "order_randomization_seed": seed,
+        "reverse_order": reverse_order,
     }
     encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), manifest
@@ -298,6 +300,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-backoff", type=float, default=2.0)
     parser.add_argument(
+        "--reverse-order",
+        action="store_true",
+        help="Invert the deterministic A/B assignment to measure position consistency.",
+    )
+    parser.add_argument(
+        "--continue-on-failure",
+        action="store_true",
+        help=(
+            "Record an unavailable vote after all retries and continue. The paired "
+            "aggregator treats failed votes as unavailable, never as a model win."
+        ),
+    )
+    parser.add_argument(
         "--failures",
         type=Path,
         help="Optional JSONL log of failed API or parsing attempts.",
@@ -327,6 +342,7 @@ def main() -> None:
         judge_model=args.judge_model,
         api_url=args.api_url,
         seed=args.seed,
+        reverse_order=args.reverse_order,
     )
 
     completed: dict[str, dict[str, Any]] = {}
@@ -369,7 +385,7 @@ def main() -> None:
                 handle.flush()
                 print(f"Recorded deterministic tie {index}/{len(baseline)} prompts")
                 continue
-            dpo_is_a = _dpo_is_a(prompt_id, args.seed)
+            dpo_is_a = _dpo_is_a(prompt_id, args.seed) ^ args.reverse_order
             response_a = after["response"] if dpo_is_a else before["response"]
             response_b = before["response"] if dpo_is_a else after["response"]
             raw = ""
@@ -400,12 +416,30 @@ def main() -> None:
                         with args.failures.open("a", encoding="utf-8") as failure_handle:
                             failure_handle.write(json.dumps(failure) + "\n")
                     if attempt == args.max_retries:
-                        raise RuntimeError(
-                            f"Judge failed for prompt {prompt_id} after "
-                            f"{args.max_retries} attempts"
-                        ) from error
+                        if not args.continue_on_failure:
+                            raise RuntimeError(
+                                f"Judge failed for prompt {prompt_id} after "
+                                f"{args.max_retries} attempts"
+                            ) from error
+                        row = {
+                            "prompt_id": prompt_id,
+                            "prompt": before["prompt"],
+                            "winner": "failed",
+                            "judgment_type": "failed_judgment",
+                            "reason": str(error),
+                            "judge_model": args.judge_model,
+                            "judge_config_fingerprint": config_fingerprint,
+                            "prompt_version": JUDGE_PROMPT_VERSION,
+                            "reverse_order": args.reverse_order,
+                        }
+                        completed[prompt_id] = row
+                        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        handle.flush()
+                        print(f"Recorded unavailable vote {index}/{len(baseline)} prompts")
+                        break
                     time.sleep(args.retry_backoff * (2 ** (attempt - 1)))
-            assert judged is not None
+            if judged is None:
+                continue
             winner = (
                 "tie"
                 if judged["winner"] == "tie"
@@ -425,6 +459,7 @@ def main() -> None:
                 "judge_model": args.judge_model,
                 "judge_config_fingerprint": config_fingerprint,
                 "prompt_version": JUDGE_PROMPT_VERSION,
+                "reverse_order": args.reverse_order,
                 "raw_judge_response": raw,
             }
             completed[prompt_id] = row
