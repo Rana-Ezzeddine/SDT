@@ -1,5 +1,33 @@
 # SDT full-parameter DPO pipeline
 
+## Current JEV adaptation (`jev-dataset-adaptation`)
+
+Start with [JEV full-dataset preparation and release gates](JEV_FULL_DATASET.md)
+and the [completed behavioral pilot and results](JEV_BEHAVIOR_PILOT.md).
+JEV uses supplied content/SDT averages with a 0.80 quality gate, not the legacy
+multi-judge confidence thresholds described below. All candidate comparisons are
+audited; quality passers beat failures and passing responses are ordered by SDT.
+
+- [Train a new 2,000-prompt Qwen pilot](https://colab.research.google.com/github/Rana-Ezzeddine/SDT/blob/jev-dataset-adaptation/notebooks/SDT_Jev_Behavior_Pilot_Colab.ipynb)
+- [Resume the saved pilot without retraining](notebooks/SDT_Jev_Behavior_Resume_Evaluation_Colab.ipynb)
+- [Restore from a private backup into another authorized Drive](notebooks/SDT_Jev_Account_Transfer_Resume_Colab.ipynb)
+- [Offline training/save/reload/resume integration check](LOCAL_SMOKE_TEST.md)
+
+The recovery notebooks target the documented November pilot by default: inspect
+the run/backup paths before executing. They do not supply private data or weights.
+Do not use a recovery notebook to start a new experiment. The test set stays locked
+until validation JEV scoring and configuration selection are complete.
+
+Install in a virtual environment with `python -m pip install -c constraints-smoke-tested.txt -e .`.
+Run tests with `PYTHONPATH=src python -m unittest discover -s tests -v` and the
+offline integration canary with `PYTHONPATH=src python scripts/smoke_jev_pipeline.py`.
+Single-T4 pilot execution is verified; distributed/Ibex deployment is not yet certified.
+Raw datasets, model weights, generated responses, reports and screenshots are not
+part of this code release. Historical smoke-run counts in their dated notes are
+not the current regression-suite count.
+
+## Historical 100-/1,500-record workflows
+
 [Open the complete training and evaluation notebook in Colab](https://colab.research.google.com/github/Rana-Ezzeddine/SDT/blob/main/notebooks/SDT_Full_DPO_Colab.ipynb)
 
 The provisional 1,500-record, one-judge experiment is isolated on the

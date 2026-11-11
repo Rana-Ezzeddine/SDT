@@ -238,7 +238,8 @@ def analyze(
             "the DPO objective. Absolute length-normalized likelihood ranking is retained as a "
             "secondary diagnostic. Prompt-cluster intervals are primary because pairs from one "
             "prompt are correlated. A pilot dataset validates the pipeline and provides preliminary "
-            "evidence; final alignment claims require the frozen multi-judge experiment."
+            "evidence; final alignment claims require a prespecified held-out evaluation "
+            "of generated SDT behavior and capability retention."
         ),
     }
     return report, details

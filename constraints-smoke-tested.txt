@@ -1,0 +1,7 @@
+# Core versions tested by the local CPU integration test, Python 3.13 on macOS.
+# This is not certification of a CUDA/DeepSpeed combination on Ibex.
+torch==2.11.0
+transformers==5.5.3
+trl==1.17.1
+accelerate==1.15.0
+datasets==4.8.5

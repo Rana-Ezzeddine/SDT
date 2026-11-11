@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .evaluate import _device_and_dtype
+from .selection import eligible_pair
 
 
 def load_prompts(
@@ -16,14 +17,15 @@ def load_prompts(
     *,
     split: str,
     min_margin: float,
+    min_sdt_margin: float = 0.0,
 ) -> list[dict[str, str]]:
     prompts: dict[str, str] = {}
     with pairs_path.open("r", encoding="utf-8") as handle:
         for line in handle:
             row = json.loads(line)
-            if not row.get("retain") or row.get("split") != split:
-                continue
-            if float(row.get("label_margin", 0.0)) < min_margin:
+            if row.get("split") != split or not eligible_pair(
+                row, all_confidence=True, min_margin=min_margin, min_sdt_margin=min_sdt_margin
+            ):
                 continue
             prompt_id = str(row["prompt_id"])
             prompt = str(row["prompt"])
@@ -45,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split", default="test", choices=["validation", "test"])
     parser.add_argument("--min-margin", type=float, default=0.10)
+    parser.add_argument("--min-sdt-margin", type=float, default=0.0)
     parser.add_argument("--max-prompts", type=int)
     parser.add_argument("--max-input-length", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=512)
@@ -64,7 +67,8 @@ def main() -> None:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, __version__
 
-    prompts = load_prompts(args.pairs, split=args.split, min_margin=args.min_margin)
+    prompts = load_prompts(args.pairs, split=args.split, min_margin=args.min_margin,
+                           min_sdt_margin=args.min_sdt_margin)
     if args.max_prompts is not None:
         prompts = prompts[: max(0, args.max_prompts)]
     if not prompts:

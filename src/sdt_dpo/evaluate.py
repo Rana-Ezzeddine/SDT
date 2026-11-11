@@ -9,6 +9,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
+from .selection import eligible_pair
 
 
 def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) -> list[float] | None:
@@ -100,13 +101,17 @@ def summarize_details(
         "label_confidence": defaultdict(list),
         "comparison_type": defaultdict(list),
         "label_margin_bucket": defaultdict(list),
+        "preference_basis": defaultdict(list),
+        "generator_model": defaultdict(list),
     }
     for row in evaluated:
         grouped["label_confidence"][str(row["label_confidence"])].append(row)
         grouped["comparison_type"][str(row["comparison_type"])].append(row)
         margin = float(row["label_margin"])
-        bucket = "[0.10,0.25)" if margin < 0.25 else "[0.25,0.50)" if margin < 0.50 else "[0.50,+inf)"
+        bucket = "[0,0.10)" if margin < 0.10 else "[0.10,0.25)" if margin < 0.25 else "[0.25,0.50)" if margin < 0.50 else "[0.50,+inf)"
         grouped["label_margin_bucket"][bucket].append(row)
+        for field in ("preference_basis", "generator_model"):
+            grouped[field][str(row.get(field, "legacy_unknown"))].append(row)
 
     return {
         "model": model,
@@ -139,7 +144,8 @@ def _count(values: Iterable[str]) -> dict[str, int]:
 
 def _device_and_dtype(torch: Any) -> tuple[Any, Any, str]:
     if torch.cuda.is_available():
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        native_bf16 = torch.cuda.get_device_capability()[0] >= 8 and torch.cuda.is_bf16_supported()
+        dtype = torch.bfloat16 if native_bf16 else torch.float16
         return torch.device("cuda"), dtype, str(dtype).replace("torch.", "cuda-")
     if torch.backends.mps.is_available():
         return torch.device("mps"), torch.float32, "mps-float32"
@@ -236,6 +242,8 @@ def parse_args() -> argparse.Namespace:
         help="Do not filter retained pairs by label_confidence (required for the one-judge pilot).",
     )
     parser.add_argument("--min-margin", type=float, default=0.10)
+    parser.add_argument("--min-sdt-margin", type=float, default=0.0,
+                        help="Jev pass/pass SDT gap only; never filters quality-gate pairs.")
     return parser.parse_args()
 
 
@@ -249,13 +257,10 @@ def main() -> None:
         for line in handle:
             row = json.loads(line)
             if (
-                row.get("retain")
-                and row.get("split") == args.split
-                and (
-                    args.all_confidence
-                    or row.get("label_confidence") in set(args.confidence)
-                )
-                and float(row.get("label_margin", 0.0)) >= args.min_margin
+                row.get("split") == args.split
+                and eligible_pair(row, all_confidence=args.all_confidence,
+                                  confidence=args.confidence, min_margin=args.min_margin,
+                                  min_sdt_margin=args.min_sdt_margin)
             ):
                 rows.append(row)
     if not rows:
@@ -287,6 +292,8 @@ def main() -> None:
                     "label_confidence": row["label_confidence"],
                     "label_margin": row["label_margin"],
                     "comparison_type": row["comparison_type"],
+                    "preference_basis": row.get("preference_basis", "legacy_unknown"),
+                    "generator_model": row.get("generator_model", "legacy_unknown"),
                     "chosen_logprob_per_token": chosen_score["mean"],
                     "rejected_logprob_per_token": rejected_score["mean"],
                     "chosen_logprob_sum": chosen_score["sum"],

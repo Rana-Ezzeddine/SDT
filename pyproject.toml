@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
+sdt-build-jev-pairs = "sdt_dpo.jev_pairs:main"
 sdt-build-pairs = "sdt_dpo.pairs:main"
 sdt-train-dpo = "sdt_dpo.train:main"
 sdt-evaluate-pairs = "sdt_dpo.evaluate:main"

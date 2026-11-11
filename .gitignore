@@ -1,4 +1,14 @@
 .venv/
+.venv-smoke/
+.DS_Store
+.codex-docx-build/
+.codex-pptx-build/
+output/
+/account-transfer-ready.jpg
+/drive-authorization-needed.jpg
+/evaluation-resumed.jpg
+data/raw/sdt_*fulljev*.json
+*.copying
 __pycache__/
 *.py[cod]
 *.egg-info/

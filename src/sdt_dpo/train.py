@@ -15,6 +15,8 @@ from typing import Any
 import yaml
 
 from .pairs import validate_no_prompt_leakage
+from .selection import eligible_pair
+from .run_identity import training_identity, check_run_identity
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -43,13 +45,24 @@ def _package_versions(names: list[str]) -> dict[str, str]:
 
 def _precision(torch: Any) -> tuple[Any, bool, bool, str]:
     if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
+        if torch.cuda.get_device_capability()[0] >= 8 and torch.cuda.is_bf16_supported():
             return torch.bfloat16, True, False, "cuda-bfloat16"
-        return torch.float16, False, True, "cuda-float16"
+        # Full-parameter AMP needs FP32 master parameters for GradScaler.
+        # Loading trainable parameters directly as FP16 fails during unscale.
+        return torch.float32, False, True, "cuda-float32-fp16-amp"
     if torch.backends.mps.is_available():
         # Float32 is slower but is the safest default for an initial Mac run.
         return torch.float32, False, False, "mps-float32"
     return torch.float32, False, False, "cpu-float32"
+
+
+def _within_length(tokenizer: Any, row: dict[str, Any], max_length: int) -> bool:
+    """Explicit list output: newer tokenizers default to a two-key BatchEncoding."""
+    prompt = [{"role": "user", "content": row["prompt"]}]
+    return all(len(tokenizer.apply_chat_template(
+        prompt + [{"role": "assistant", "content": row[field]}],
+        tokenize=True, add_generation_prompt=False, return_dict=False,
+    )) <= max_length for field in ("chosen", "rejected"))
 
 
 def _resolve_warmup_steps(
@@ -76,6 +89,8 @@ def _resolve_warmup_steps(
     batches_per_epoch = math.ceil(train_examples / (per_device_batch * replicas))
     updates_per_epoch = math.ceil(batches_per_epoch / accumulation)
     total_updates = math.ceil(updates_per_epoch * epochs)
+    if int(config.get("max_steps", -1)) > 0:
+        total_updates = int(config["max_steps"])
     return math.ceil(total_updates * ratio)
 
 
@@ -104,6 +119,10 @@ def main() -> None:
     pairs_path = _repo_path(config_path, str(config["pairs_file"]))
     output_dir = _repo_path(config_path, str(config["output_dir"]))
     output_dir.mkdir(parents=True, exist_ok=True)
+    identity = training_identity(config, pairs_path)
+    # Opt-in for legacy notebooks; mandatory in the full-dataset configuration.
+    if config.get("enforce_run_identity", False):
+        check_run_identity(output_dir, identity)
 
     all_pairs = load_dataset("json", data_files=str(pairs_path), split="train")
     all_rows = [dict(row) for row in all_pairs]
@@ -123,13 +142,9 @@ def main() -> None:
     minimum_margin = float(config.get("min_label_margin", 0.0))
 
     def eligible(row: dict[str, Any]) -> bool:
-        confidence_allowed = (
-            not filter_by_confidence
-            or row.get("label_confidence") in allowed_confidence
-        )
-        return bool(row["retain"]) and confidence_allowed and (
-            float(row["label_margin"]) >= minimum_margin
-        )
+        return eligible_pair(row, all_confidence=not filter_by_confidence,
+                             confidence=allowed_confidence, min_margin=minimum_margin,
+                             min_sdt_margin=float(config.get("min_sdt_margin", 0.0)))
 
     eligible_pairs = all_pairs.filter(eligible)
     split_datasets: dict[str, Dataset] = {
@@ -177,16 +192,7 @@ def main() -> None:
     max_length = int(config.get("max_length", 1024))
 
     def within_length(row: dict[str, Any]) -> bool:
-        prompt = [{"role": "user", "content": row["prompt"]}]
-        chosen = prompt + [{"role": "assistant", "content": row["chosen"]}]
-        rejected = prompt + [{"role": "assistant", "content": row["rejected"]}]
-        chosen_ids = tokenizer.apply_chat_template(
-            chosen, tokenize=True, add_generation_prompt=False
-        )
-        rejected_ids = tokenizer.apply_chat_template(
-            rejected, tokenize=True, add_generation_prompt=False
-        )
-        return max(len(chosen_ids), len(rejected_ids)) <= max_length
+        return _within_length(tokenizer, row, max_length)
 
     before_lengths = {split: len(dataset) for split, dataset in split_datasets.items()}
     split_datasets = {
@@ -215,6 +221,8 @@ def main() -> None:
     )
 
     dtype, use_bf16, use_fp16, precision_name = _precision(torch)
+    if config.get("use_cpu", False):
+        dtype, use_bf16, use_fp16, precision_name = torch.float32, False, False, "cpu-float32"
     eval_strategy = str(config.get("eval_strategy", "epoch"))
     save_strategy = str(config.get("save_strategy", eval_strategy))
     dtype_key = "dtype" if int(transformers_version.split(".", 1)[0]) >= 5 else "torch_dtype"
@@ -231,6 +239,8 @@ def main() -> None:
         learning_rate=float(config.get("learning_rate", 5e-7)),
         warmup_steps=warmup_steps,
         num_train_epochs=float(config.get("num_train_epochs", 1)),
+        max_steps=int(config.get("max_steps", -1)),
+        use_cpu=bool(config.get("use_cpu", False)),
         per_device_train_batch_size=int(config.get("per_device_train_batch_size", 1)),
         per_device_eval_batch_size=int(config.get("per_device_eval_batch_size", 1)),
         gradient_accumulation_steps=int(config.get("gradient_accumulation_steps", 8)),
@@ -258,6 +268,7 @@ def main() -> None:
         model_init_kwargs={dtype_key: dtype},
         seed=seed,
         data_seed=seed,
+        deepspeed=config.get("deepspeed"),
     )
 
     trainer = DPOTrainer(
@@ -268,6 +279,9 @@ def main() -> None:
         eval_dataset=validation_dpo,
         processing_class=tokenizer,
     )
+    if trainer.is_world_process_zero():
+        (output_dir / "training_identity.json").write_text(json.dumps(identity, indent=2) + "\n")
+    trainer.accelerator.wait_for_everyone()
 
     total_parameters = sum(parameter.numel() for parameter in trainer.model.parameters())
     trainable_parameters = sum(
@@ -301,6 +315,9 @@ def main() -> None:
     # after the reference model has already been released.
     validation_metrics = trainer.evaluate(metric_key_prefix="validation")
     trainer.save_model(str(output_dir))
+    trainer.accelerator.wait_for_everyone()
+    if not trainer.is_world_process_zero():
+        return
     tokenizer.save_pretrained(str(output_dir))
 
     (output_dir / "train_metrics.json").write_text(
